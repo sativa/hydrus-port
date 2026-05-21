@@ -87,83 +87,87 @@ def solve_tridiagonal(
         Fortran node 1 -> Python index 0
         Fortran node N -> Python index N-1
     """
-    # Work on copies
-    Pw = P.copy()
-    Rw = R.copy()
-    Sw = S.copy()
-    hB = hNew.copy()
-    
-    # Fortran uses 1-based indexing. Map to Python 0-based:
-    # Fortran node 1 = Python 0 (bottom)
-    # Fortran node 2 = Python 1
-    # Fortran node N-1 = Python N-2
-    # Fortran node N = Python N-1 (top)
-    
-    # Forward elimination
-    # Fortran: if(KodBot.ge.0) P(2)=P(2)-S(1)*hBot
-    # Python:  if(KodBot>=0) Pw[1]=Pw[1]-Sw[0]*hBot
+    # Work on copies (avoid mutating caller's arrays).  Convert P/R/S to
+    # plain Python lists for tight scalar arithmetic — numpy ndarray
+    # element access goes through __getitem__ each time and is ~4× slower
+    # than a list lookup in the Thomas algorithm's tight inner loops.
+    Pw = P.tolist()
+    Rw = R.tolist()
+    Sw = S.tolist()
+
+    # Forward elimination — first eliminate the boundary node.
     if KodBot >= 0:
-        # Flux BC at bottom: hNew[0] = hBot, eliminate from node 2
         Pw[1] = Pw[1] - Sw[0] * hBot
     else:
-        # Head BC at bottom: use boundary coefficients
         if abs(RB) < rMin:
-            RB = rMin
-        Pw[1] = Pw[1] - PB * Sw[0] / RB
-        Rw[1] = Rw[1] - SB_coef * Sw[0] / RB
-    
-    # Interior forward elimination: nodes 3..N-1 (Python: 2..N-2)
+            RB = rMin if RB >= 0 else -rMin
+        ratio = Sw[0] / RB
+        Pw[1] = Pw[1] - PB * ratio
+        Rw[1] = Rw[1] - SB_coef * ratio
+
+    # Interior forward elimination — purely sequential.  We explicitly
+    # cache R_prev and S_prev to avoid two list lookups per step.
+    R_prev = Rw[1]
+    S_prev = Sw[1]
+    P_prev = Pw[1]
     for i in range(2, N - 1):
-        if abs(Rw[i - 1]) < rMin:
-            Rw[i - 1] = rMin
-        Pw[i] = Pw[i] - Pw[i - 1] * Sw[i - 1] / Rw[i - 1]
-        Rw[i] = Rw[i] - Sw[i - 1] * Sw[i - 1] / Rw[i - 1]
-    
-    # Top boundary handling
-    # Fortran: if(KodTop.gt.0) P(N-1)=P(N-1)-S(N-1)*hTop
-    # Python:  if(KodTop>0) Pw[N-2]=Pw[N-2]-Sw[N-2]*hTop
+        if R_prev > -rMin and R_prev < rMin:
+            R_prev = rMin if R_prev >= 0 else -rMin
+            Rw[i - 1] = R_prev
+        S_im1 = Sw[i - 1]
+        m = S_im1 / R_prev
+        Pw[i] = Pw[i] - P_prev * m
+        Rw[i] = Rw[i] - S_im1 * m
+        R_prev = Rw[i]
+        P_prev = Pw[i]
+
+    # Top BC.
     if KodTop > 0:
-        # Flux BC at top: hNew[N-1] = hTop, eliminate from node N-1
         Pw[N - 2] = Pw[N - 2] - Sw[N - 2] * hTop
     else:
-        # Head BC at top: use boundary coefficients
-        if abs(Rw[N - 2]) < rMin:
-            Rw[N - 2] = rMin
-        Pw[N - 1] = PT - Pw[N - 2] * ST / Rw[N - 2]
-        Rw[N - 1] = RT - Sw[N - 2] * ST / Rw[N - 2]
-    
-    # Back substitution
+        rN2 = Rw[N - 2]
+        if -rMin < rN2 < rMin:
+            rN2 = rMin if rN2 >= 0 else -rMin
+            Rw[N - 2] = rN2
+        ratio = ST / rN2
+        Pw[N - 1] = PT - Pw[N - 2] * ratio
+        Rw[N - 1] = RT - Sw[N - 2] * ratio
+
+    # Back substitution.
     hNew_out = np.empty(N, dtype=np.float64)
-    
-    # Top nodes
-    if abs(Rw[N - 2]) < rMin:
-        Rw[N - 2] = rMin
+    rN2 = Rw[N - 2]
+    if -rMin < rN2 < rMin:
+        rN2 = rMin if rN2 >= 0 else -rMin
+        Rw[N - 2] = rN2
+
     if KodTop > 0:
         hNew_out[N - 1] = hTop
-        hNew_out[N - 2] = Pw[N - 2] / Rw[N - 2]
+        hNew_out[N - 2] = Pw[N - 2] / rN2
     else:
-        # Guard Rw[N-1] against the Fortran ``if(dabs(R(N-1)).lt.rMin) R(N-1)=rMin``
-        # rule — without it, free-drainage cases that briefly drive RT toward
-        # zero (e.g. during sharp BC switching) trigger numpy divide-by-zero.
-        if abs(Rw[N - 1]) < rMin:
-            Rw[N - 1] = rMin
-        hNew_out[N - 1] = Pw[N - 1] / Rw[N - 1]
-        hNew_out[N - 2] = (Pw[N - 2] - Sw[N - 2] * hNew_out[N - 1]) / Rw[N - 2]
-    
-    # Interior back substitution: nodes N-2..2 (Python: N-3..1)
+        rN1 = Rw[N - 1]
+        if -rMin < rN1 < rMin:
+            rN1 = rMin if rN1 >= 0 else -rMin
+        h_top = Pw[N - 1] / rN1
+        hNew_out[N - 1] = h_top
+        hNew_out[N - 2] = (Pw[N - 2] - Sw[N - 2] * h_top) / rN2
+
+    # Interior back substitution.  Carry h_next in a local for speed.
+    h_next = hNew_out[N - 2]
     for i in range(N - 3, 0, -1):
-        if abs(Rw[i]) < rMin:
-            Rw[i] = rMin
-        hNew_out[i] = (Pw[i] - Sw[i] * hNew_out[i + 1]) / Rw[i]
-    
-    # Bottom node
+        r = Rw[i]
+        if -rMin < r < rMin:
+            r = rMin if r >= 0 else -rMin
+        h_next = (Pw[i] - Sw[i] * h_next) / r
+        hNew_out[i] = h_next
+
+    # Bottom node.
     if KodBot >= 0:
         hNew_out[0] = hBot
     else:
-        if abs(RB) < rMin:
-            RB = rMin
+        if -rMin < RB < rMin:
+            RB = rMin if RB >= 0 else -rMin
         hNew_out[0] = (PB - SB_coef * hNew_out[1]) / RB
-    
+
     return hNew_out
 
 

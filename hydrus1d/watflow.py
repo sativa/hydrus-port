@@ -294,48 +294,52 @@ def solve_water_flow(
         #      has no compensating sink back to hCritA.  Without this the
         #      Picard solution spreads the −10⁵ surface head into the bulk
         #      of the column in just a few time steps.
-        top10 = int(0.9 * N)
-        clamped = np.zeros(N, dtype=bool)
-        for i in range(N):
-            if abs(hNew[i]) > rMax:
-                hNew[i] = rMax if hNew[i] >= 0 else -rMax
-            if abs(KodTop) == 4 and hNew[i] < hCritA and i == N - 1:
-                hNew[i] = hCritA
-                clamped[i] = True
-            if (abs(KodTop) == 4 and hNew[i] < hCritA
-                    and i > top10 and Sink[i] <= 0.0):
-                hNew[i] = hCritA
-                clamped[i] = True
-        # Sync theta with the clamped heads so the post-iteration mass update
-        # ``theta += Cap·Δh`` does not leave theta inconsistent with h on the
-        # pinned nodes.
-        if clamped.any():
+        # Post-Gauss clamping (vectorised port of WATFLOW.FOR:95-101).
+        np.clip(hNew, -rMax, rMax, out=hNew)
+        clamped_mask = None
+        if abs(KodTop) == 4:
+            top10 = int(0.9 * N)
+            # Pin the surface node when it tries to dive below hCritA
+            top_node_clamp = hNew[N - 1] < hCritA
+            # Pin top-10% nodes with no compensating sink
+            idx = np.arange(N)
+            below = (hNew < hCritA) & (idx > top10) & (Sink <= 0.0)
+            if top_node_clamp:
+                below[N - 1] = True
+            if below.any():
+                hNew[below] = hCritA
+                clamped_mask = below
+        if clamped_mask is not None:
+            # Sync theta on clamped nodes so the post-iter mass update
+            # ``theta += Cap·Δh`` does not leave theta inconsistent.
             from .material import FQ
-            for i in np.where(clamped)[0]:
+            for i in np.where(clamped_mask)[0]:
                 M = int(MatNum[i])
                 theta[i] = FQ(iModel, hNew[i], ParD[:, M])
-        
-        # Check convergence (Fortran: label 14..15)
-        ItCrit = True
-        for i in range(N):
-            M = MatNum[i]
-            EpsTh = 0.0
-            EpsH = 0.0
-            hSat = ParW[10, M]  # saturated head
-            
-            if hTemp[i] < hSat and hNew[i] < hSat:
-                # Compute water content change
-                Th = theta[i] + Cap[i] * (hNew[i] - hTemp[i]) / \
-                     max(ParW[1, M] - ParW[0, M], 1e-10) / ATh[i] * Rate
-                EpsTh = abs(theta[i] - Th)
-            else:
-                EpsH = abs(hNew[i] - hTemp[i])
-            
-            if EpsTh > TolTh or EpsH > TolH or abs(hNew[i]) > rMax * 0.999:
-                ItCrit = False
-                if abs(hNew[i]) > rMax * 0.999:
-                    Iter = MaxIt  # force exit
-                break
+
+        # Convergence test (vectorised port of WATFLOW.FOR:107-127).
+        M_idx = MatNum.astype(np.int64)
+        hSat_node = ParW[10, M_idx]
+        denom = np.maximum(ParW[1, M_idx] - ParW[0, M_idx], 1e-10)
+        # branch (a): both legs below hSat → use the theta-form criterion
+        wet_branch = (hTemp < hSat_node) & (hNew < hSat_node)
+        EpsTh = np.zeros(N, dtype=np.float64)
+        EpsH = np.zeros(N, dtype=np.float64)
+        np.copyto(
+            EpsTh,
+            np.abs(Cap * (hNew - hTemp) / denom / ATh * Rate),
+            where=wet_branch,
+        )
+        np.copyto(EpsH, np.abs(hNew - hTemp), where=~wet_branch)
+
+        if (np.abs(hNew) > rMax * 0.999).any():
+            # Out-of-bound head: same Iter = MaxIt force-exit as Fortran.
+            ItCrit = False
+            Iter = MaxIt
+        elif (EpsTh > TolTh).any() or (EpsH > TolH).any():
+            ItCrit = False
+        else:
+            ItCrit = True
         
         # WATFLOW.FOR:128 — force at least 2 Picard iterations (3 when
         # hysteresis is on).  With a single iteration the linear system can
@@ -437,62 +441,91 @@ def _set_mat_properties(
     ``tables`` (hTab/ConTab/CapTab/TheTab + alh1/dlh) are supplied we use
     linear-in-h interpolation, exactly mirroring the Fortran code path.
     """
-    import math as _math
     use_tables = tables is not None and "hTab" in tables
+
+    # Temperature correction — vectorised; AT, BT default to 1.0
+    AT = np.ones(N, dtype=np.float64)
+    BT = np.ones(N, dtype=np.float64)
+    if lWTDep and Temp is not None:
+        TempR = 20.0
+        T = Temp
+        AT = (75.6 - 0.1425 * T - 2.38e-4 * T ** 2) / \
+             (75.6 - 0.1425 * TempR - 2.38e-4 * TempR ** 2)
+        BT = (1.787 - 0.007 * TempR) / (1.0 + 0.03225 * TempR) / \
+             ((1.787 - 0.007 * T) / (1.0 + 0.03225 * T))
+
+    # ParW[10, M_i] for each node — gather via fancy indexing
+    M_idx = MatNum.astype(np.int64)
+    par_sat = ParW[10, M_idx]                          # (N,) saturated head
+    ah_safe = np.where(Ah != 0.0, Ah, 1.0)
+    hi1 = np.where(Ah != 0.0, np.minimum(par_sat, hTemp / ah_safe / AT), hTemp)
+    hi2 = np.where(Ah != 0.0, np.minimum(par_sat, hNew / ah_safe / AT), hNew)
+    hiM = 0.1 * hi1 + 0.9 * hi2
+
+    Coni = np.empty(N, dtype=np.float64)
+    Capi = np.empty(N, dtype=np.float64)
+    Thei = np.empty(N, dtype=np.float64)
+
     if use_tables:
         hTab = tables["hTab"]; ConTab = tables["ConTab"]
         CapTab = tables["CapTab"]; TheTab = tables["TheTab"]
         alh1 = tables["alh1"]; dlh = tables["dlh"]
         NTab_tab = tables["NTab"]
-        hSat_M = tables.get("hSat_M")
-        ConSat = tables.get("ConSat")
+        hSat_M = tables["hSat_M"]
+        ConSat = tables["ConSat"]
 
-    for i in range(N):
-        M = MatNum[i]
+        sat_node = hSat_M[M_idx]                       # (N,)
+        # Three regimes per node:  (a) saturated, (b) in-table, (c) outside
+        saturated_mask = (hi1 >= sat_node) & (hi2 >= sat_node)
+        in_table = (hi1 < sat_node) & (hi2 < sat_node) & \
+                   (hiM >= hTab[NTab_tab - 1, 0]) & (hiM <= hTab[0, 0])
+        fallback = ~(saturated_mask | in_table)
 
-        # Temperature correction
-        AT = 1.0
-        BT = 1.0
-        if lWTDep and Temp is not None:
-            TempR = 20.0
-            AT = (75.6 - 0.1425 * Temp[i] - 2.38e-4 * Temp[i] ** 2) / \
-                 (75.6 - 0.1425 * TempR - 2.38e-4 * TempR ** 2)
-            BT = (1.787 - 0.007 * TempR) / (1.0 + 0.03225 * TempR) / \
-                 ((1.787 - 0.007 * Temp[i]) / (1.0 + 0.03225 * Temp[i]))
+        # Saturated: use ConSat / 0 / ths
+        if saturated_mask.any():
+            ms = M_idx[saturated_mask]
+            Coni[saturated_mask] = ConSat[ms]
+            Capi[saturated_mask] = 0.0
+            Thei[saturated_mask] = ParD[1, ms]
 
-        # Compute head for property evaluation
-        hi1 = min(ParW[10, M], hTemp[i] / Ah[i] / AT) if Ah[i] != 0 else hTemp[i]
-        hi2 = min(ParW[10, M], hNew[i] / Ah[i] / AT) if Ah[i] != 0 else hNew[i]
-        hiM = 0.1 * hi1 + 0.9 * hi2
+        # Linear-in-h interpolation, fully vectorised.  iT is the bracket
+        # index in the log10(-h) table.
+        if in_table.any():
+            h_in = hiM[in_table]
+            M_in = M_idx[in_table]
+            # Bracket index (clipped to [0, NTab-2])
+            iT = np.clip(((np.log10(-h_in) - alh1) / dlh).astype(np.int64),
+                         0, NTab_tab - 2)
+            denom = hTab[iT + 1, M_in] - hTab[iT, M_in]
+            dh = np.where(denom != 0.0, (h_in - hTab[iT, M_in]) / denom, 0.0)
+            Coni[in_table] = ConTab[iT, M_in] + \
+                             (ConTab[iT + 1, M_in] - ConTab[iT, M_in]) * dh
+            Capi[in_table] = CapTab[iT, M_in] + \
+                             (CapTab[iT + 1, M_in] - CapTab[iT, M_in]) * dh
+            Thei[in_table] = TheTab[iT, M_in] + \
+                             (TheTab[iT + 1, M_in] - TheTab[iT, M_in]) * dh
 
-        if use_tables and hi1 < hSat_M[M] and hi2 < hSat_M[M] \
-                and hTab[NTab_tab - 1, M] <= hiM <= hTab[0, M]:
-            # Table interpolation path — matches WATFLOW.FOR:482-489
-            iT = int((_math.log10(-hiM) - alh1) / dlh)
-            iT = max(0, min(iT, NTab_tab - 2))
-            denom = (hTab[iT + 1, M] - hTab[iT, M])
-            if denom == 0.0:
-                dh = 0.0
-            else:
-                dh = (hiM - hTab[iT, M]) / denom
-            Coni = ConTab[iT, M] + (ConTab[iT + 1, M] - ConTab[iT, M]) * dh
-            Capi = CapTab[iT, M] + (CapTab[iT + 1, M] - CapTab[iT, M]) * dh
-            Thei = TheTab[iT, M] + (TheTab[iT + 1, M] - TheTab[iT, M]) * dh
-        elif use_tables and hi1 >= hSat_M[M] and hi2 >= hSat_M[M]:
-            # Both legs saturated → use the saturated constants
-            Coni = float(ConSat[M])
-            Capi = 0.0
-            Thei = float(ParD[1, M])
-        else:
-            # Analytical fall-back
-            Coni = FK(iModel, hiM, ParD[:, M])
-            Capi = FC(iModel, hiM, ParD[:, M])
-            Thei = FQ(iModel, hiM, ParD[:, M])
+        # Fallback: analytical FK / FC / FQ (rare in practice)
+        if fallback.any():
+            for i in np.where(fallback)[0]:
+                M = int(M_idx[i])
+                Coni[i] = FK(iModel, hiM[i], ParD[:, M])
+                Capi[i] = FC(iModel, hiM[i], ParD[:, M])
+                Thei[i] = FQ(iModel, hiM[i], ParD[:, M])
+    else:
+        # Pure analytical path
+        for i in range(N):
+            M = int(M_idx[i])
+            Coni[i] = FK(iModel, hiM[i], ParD[:, M])
+            Capi[i] = FC(iModel, hiM[i], ParD[:, M])
+            Thei[i] = FQ(iModel, hiM[i], ParD[:, M])
 
-        # Apply hysteretic corrections
-        Con[i] = Coni * AK[i] * BT
-        Cap[i] = Capi * ATh[i] / Ah[i] / AT
-        theta[i] = ParD[0, M] + (Thei - ParD[0, M]) * ATh[i]
+    # Apply hysteretic corrections (vectorised)
+    Con[:] = Coni * AK * BT
+    Cap[:] = Capi * ATh / ah_safe / AT
+    # theta[i] = thr_M + (Thei - thr_M) * ATh
+    thr_node = ParD[0, M_idx]
+    theta[:] = thr_node + (Thei - thr_node) * ATh
 
 
 def _reset_assemble(
@@ -605,38 +638,53 @@ def _reset_assemble(
     if iDualPor > 0:
         PB = PB - SinkIm[0] * dx
     
-    # Interior nodes (nodes 2..N-1, indices 1..N-2)
-    for i in range(1, N - 1):
-        dxA = x[i] - x[i - 1]
-        dxB = x[i + 1] - x[i]
-        dx = (dxA + dxB) / 2.0
-        
-        ConA = (Con[i] + Con[i - 1]) / 2.0
-        ConB = (Con[i] + Con[i + 1]) / 2.0
+    # Interior nodes (1..N-2) — fully vectorised.  For node i:
+    #     dxA = x[i] - x[i-1]            (lower half-cell)
+    #     dxB = x[i+1] - x[i]            (upper half-cell)
+    #     dx  = (dxA + dxB) / 2
+    #     ConA, ConB = averages with the neighbours below / above
+    #     A2 = ConA/dxA + ConB/dxB
+    #     A3 = -ConB/dxB
+    #     F2 = Cap[i] * dx / dt
+    #     R[i] = A2 + F2
+    #     P[i] = F2*hNew[i] - (θ - θ_old)*dx/dt - (ConA - ConB)*Grav - Sink*dx
+    #     S[i] = A3
+    if N > 2:
+        dxA_arr = x[1:-1] - x[:-2]
+        dxB_arr = x[2:] - x[1:-1]
+        dx_arr = 0.5 * (dxA_arr + dxB_arr)
+
         if lGeom:
-            ConA = np.sqrt(Con[i] * Con[i - 1])
-            ConB = np.sqrt(Con[i] * Con[i + 1])
-        
+            ConA_arr = np.sqrt(Con[1:-1] * Con[:-2])
+            ConB_arr = np.sqrt(Con[1:-1] * Con[2:])
+        else:
+            ConA_arr = 0.5 * (Con[1:-1] + Con[:-2])
+            ConB_arr = 0.5 * (Con[1:-1] + Con[2:])
+
         if lCentrif:
-            Grav = CosAlf * (Radius + abs(x[i]))
-        
-        B = (ConA - ConB) * Grav
+            Grav_arr = CosAlf * (Radius + np.abs(x[1:-1]))
+        else:
+            Grav_arr = Grav
+
+        B_arr = (ConA_arr - ConB_arr) * Grav_arr
         if lCentrif:
-            B = B + CosAlf * Con[i] * dx
-        
+            B_arr = B_arr + CosAlf * Con[1:-1] * dx_arr
+
         if lVapor and ConVh is not None:
-            ConA = ConA + (ConVh[i] + ConVh[i - 1]) / 2.0
-            ConB = ConB + (ConVh[i] + ConVh[i + 1]) / 2.0
-        
-        A2 = ConA / dxA + ConB / dxB
-        A3 = -ConB / dxB
-        F2 = Cap[i] * dx / dt * fRE
-        
-        R[i] = A2 + F2
-        P[i] = F2 * hNew[i] - (theta[i] - theta_old[i]) * dx / dt * fRE - B - Sink[i] * dx
+            ConA_arr = ConA_arr + 0.5 * (ConVh[1:-1] + ConVh[:-2])
+            ConB_arr = ConB_arr + 0.5 * (ConVh[1:-1] + ConVh[2:])
+
+        A2_arr = ConA_arr / dxA_arr + ConB_arr / dxB_arr
+        A3_arr = -ConB_arr / dxB_arr
+        F2_arr = Cap[1:-1] * dx_arr / dt * fRE
+
+        R[1:-1] = A2_arr + F2_arr
+        P[1:-1] = (F2_arr * hNew[1:-1]
+                   - (theta[1:-1] - theta_old[1:-1]) * dx_arr / dt * fRE
+                   - B_arr - Sink[1:-1] * dx_arr)
         if iDualPor > 0:
-            P[i] = P[i] - SinkIm[i] * dx
-        S[i] = A3
+            P[1:-1] = P[1:-1] - SinkIm[1:-1] * dx_arr
+        S[1:-1] = A3_arr
     
     # Top node (node N, index N-1)
     dxA = x[N - 1] - x[N - 2]
