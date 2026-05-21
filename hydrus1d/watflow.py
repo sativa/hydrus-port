@@ -562,9 +562,16 @@ def _reset_assemble(
     fRE = 1.0
     Grav = CosAlf
     
-    # Bottom node (node 1, index 0)
-    dx = x[1] - x[0]
-    dxB = dx / 2.0
+    # Bottom node (node 1, index 0).
+    # Fortran convention (WATFLOW.FOR:200-201):
+    #   dxB = x(2) - x(1)   -> internodal distance to neighbour above
+    #   dx  = dxB / 2       -> half-cell associated with this boundary node
+    # The original Python port swapped these two, making every coefficient
+    # at the bottom node ≈2× too large.  That artificially "stiffened" the
+    # bottom equation just enough to spread top-BC perturbations across the
+    # whole column over a few hundred steps.
+    dxB = x[1] - x[0]
+    dx = dxB / 2.0
     ConB = (Con[0] + Con[1]) / 2.0
     if lGeom:
         ConB = np.sqrt(Con[0] * Con[1])
