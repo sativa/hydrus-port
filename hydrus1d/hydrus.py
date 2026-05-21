@@ -589,9 +589,31 @@ class Hydrus1DSimulation:
         # Initial velocity field (Darcy)
         self._update_velocity(use_new=False)
 
-        max_steps = 1_000_000
+        # Safety cap on the time loop.  Pathological inputs (e.g. ponded
+        # water on a sand/clay capillary barrier) can spin in tens of
+        # thousands of dt≈dtMin steps where the surface flux oscillates
+        # between ±10⁵.  The Fortran binary typically gives up early on
+        # such cases; we mirror that with a stagnation detector that
+        # triggers when *both* (a) dt is pinned at its floor and (b) the
+        # most recent boundary flux is non-physically large.
+        max_steps = 100_000
+        thrash_count = 0
         for _step in range(max_steps):
             if abs(s.t - s.tEnd) <= 0.5 * s.dtMin or s.t > s.tEnd:
+                break
+            if (s.dt <= s.dtMin * 1.001
+                    and abs(getattr(s, "last_vTop", 0.0)) > 1.0e4):
+                thrash_count += 1
+            else:
+                thrash_count = 0
+            if thrash_count > 500:
+                import warnings
+                warnings.warn(
+                    f"hydrus.run: solution thrashing at t={s.t} after {_step} "
+                    f"steps (dt={s.dt}, |vTop|={abs(s.last_vTop):.2g} cm/T). "
+                    "Stopping early — input likely non-physical.",
+                    RuntimeWarning,
+                )
                 break
 
             # --- one full time step (with retry on non-convergence) -------
