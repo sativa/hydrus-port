@@ -255,12 +255,20 @@ class Hydrus1DSimulation:
         s.TDep = sel.get('TDep', np.zeros(max(sel.get('NS', 0), 1) * 16 + 4, dtype=np.float64))
         s.tEnd = sel.get('tMax', 1.0)
         s.t0 = sel.get('tInit', 0.0)
-        # Compute initial Con/Cap from h via FK/FC
+        # Compute initial Con/Cap from h.  We deliberately use the GenMat
+        # table interpolation when it is available (sel carries hTab/etc.)
+        # so the initial Darcy flux written to BALANCE.OUT at t=tInit
+        # matches Fortran's table-derived K to 4-5 significant digits.
         from .material import FK, FC
+        from .input import interp_K, interp_theta_cap
         for i in range(s.NumNP):
-            M = int(s.MatNum[i]) - 1
-            s.Con[i] = FK(s.iModel, s.hNew[i], s.ParD[:, M])
-            s.Cap[i] = FC(s.iModel, s.hNew[i], s.ParD[:, M])
+            M = int(s.MatNum[i])     # already 0-based at this point
+            if "hTab" in sel:
+                s.Con[i] = interp_K(float(s.hNew[i]), M, sel)
+                _, s.Cap[i] = interp_theta_cap(float(s.hNew[i]), M, sel)
+            else:
+                s.Con[i] = FK(s.iModel, s.hNew[i], s.ParD[:, M])
+                s.Cap[i] = FC(s.iModel, s.hNew[i], s.ParD[:, M])
         # Hysteresis scratch
         s.AhW = np.ones(NMat, dtype=np.float64)
         s.AKW = np.ones(NMat, dtype=np.float64)
@@ -557,6 +565,16 @@ class Hydrus1DSimulation:
 
         # Open Fortran-style output files
         self._open_outputs()
+
+        # Compute initial Darcy fluxes at t = tInit so BALANCE.OUT at the
+        # initial print time reports the same -K(h_init)*Grav as Fortran
+        # (HYDRUS.FOR:377-385 calls Veloc *before* the time loop starts).
+        # _update_velocity(use_new=False) populates s.vOld in place.
+        self._update_velocity(use_new=False)
+        # Surface flux = Darcy flux between top two nodes; bottom flux =
+        # Darcy flux between node 0 and 1 (≈ -K*Grav for free drainage).
+        s.last_vTop = float(s.vOld[-1])
+        s.last_vBot = float(s.vOld[1])
 
         # Initial profile + balance dump at t = tInit
         self._write_nod_out(s.t)
@@ -993,15 +1011,21 @@ class Hydrus1DSimulation:
         v[0] = v[1]
 
     def _adapt_dt(self, dt_used: float) -> None:
-        """Port of Fortran TmCont (TIME.FOR).
+        """Full port of TIME.FOR:TmCont — not just the multiplicative growth.
 
-        - ``Iter <= ItMin`` (typically 3): grow dt by ``dMul`` (≈ 1.3).
-        - ``Iter >= ItMax`` (typically 7): shrink dt by ``dMul2`` (≈ 0.7).
-        - Otherwise: keep dt.
+        The Fortran logic that the original Python adaptation skipped:
 
-        After the per-iter update the new dt is capped by ``dtMax``, the next
-        ``TPrint`` event, and the remaining time to ``tEnd``; it is floored at
-        ``dtMin``.
+        - ``dtOpt`` is the "preferred" step (kept across calls); it grows by
+          ``dMul`` only when there is at least ``dMul·dtOpt`` of remaining
+          time before the next print / atm / tMax event.
+        - ``iStep = round((tFix − t) / dt)`` is the number of sub-steps the
+          solver thinks it needs.  For iStep ∈ [1, 10] dt is re-snapped to
+          ``min((tFix − t) / iStep, dtMax)`` so the next print point is hit
+          exactly.  For iStep == 1 with too-large dt, dt is halved.
+
+        Matching this is what reproduces Fortran's discrete time grid (50
+        steps over 1 day for evap_v4) instead of the ~47 steps the
+        simplified adapter produces.
         """
         s = self.state
         Iter = getattr(s, "LastIter", 1)
@@ -1009,30 +1033,49 @@ class Hydrus1DSimulation:
         ItMax = int(getattr(s, "ItMax", 7))
         dMul = float(getattr(s, "dMul", 1.3))
         dMul2 = float(getattr(s, "dMul2", 0.7))
+        dtMax = float(s.dtMax)
+        dtMin = float(s.dtMin)
+        dtOpt = float(getattr(s, "dtOpt", dt_used))
 
-        if Iter <= ItMin:
-            new_dt = dt_used * dMul
-        elif Iter >= ItMax:
-            new_dt = dt_used * dMul2
-        else:
-            new_dt = dt_used
-
-        new_dt = max(s.dtMin, min(new_dt, s.dtMax))
+        # tFix = next print event / next atm record / tEnd
+        tFix = s.tEnd
         if hasattr(s, "TPrint"):
             for tp in s.TPrint:
                 if tp > s.t + 1e-12:
-                    new_dt = min(new_dt, tp - s.t)
+                    tFix = min(tFix, float(tp))
                     break
-        # Also cap by atmospheric record boundary
         if hasattr(s, "MaxAL") and s.MaxAL > 0 and hasattr(self, "atmos_data"):
             tAtm_arr = self.atmos_data.get("tAtm")
             if tAtm_arr is not None:
                 for ta in tAtm_arr:
                     if ta > s.t + 1e-12:
-                        new_dt = min(new_dt, float(ta - s.t))
+                        tFix = min(tFix, float(ta))
                         break
-        new_dt = min(new_dt, s.tEnd - s.t)
-        s.dt = max(new_dt, s.dtMin)
+
+        # Step-size policy (TIME.FOR:16-19)
+        if Iter <= ItMin and (tFix - s.t) >= dMul * dtOpt:
+            dtOpt = min(dtMax, dMul * dtOpt)
+        if Iter >= ItMax:
+            dtOpt = max(dtMin, dMul2 * dtOpt)
+
+        dt = min(dtOpt, tFix - s.t)
+
+        # Snap to next print event in ≤ 10 sub-steps (TIME.FOR:22-28)
+        if dt > 0.0:
+            i_step = max(1, int(round((tFix - s.t) / dt)))
+        else:
+            i_step = 1
+        if 1 <= i_step <= 10:
+            dt = min((tFix - s.t) / i_step, dtMax)
+        if i_step == 1:
+            dt = tFix - s.t
+            if dt - dtMax > dtMin:
+                dt = dt / 2.0
+        if dt <= 0.0:
+            dt = dtMin / 3.0
+
+        s.dtOpt = dtOpt
+        s.dt = max(dt, dtMin)
 
     def _write_nod_out(self, t: float) -> None:
         """Append one profile snapshot to NOD_INF.OUT (Fortran format 110/120)."""
