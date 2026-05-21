@@ -1107,7 +1107,19 @@ class Hydrus1DSimulation:
         f.write("----------------------------------------------------------\n")
         f.write(f" Area     [L]        {area:11.5E}  {area:11.5E}\n")
         f.write(f" W-volume [L]        {wsNow:11.5E}  {wsNow:11.5E}\n")
-        h_mean = float(np.mean(s.hNew))
+        # Fortran SubReg uses a trapezoidal average:
+        #   hMean = Σ (hE_i * dx_i) / Σ dx_i, where hE_i = (h_i + h_{i+1}) / 2
+        # over each interval.  In effect endpoints get half-weight and
+        # interior nodes get full weight.  np.mean would give an unweighted
+        # arithmetic mean, which differs by ~50 % when one endpoint is at
+        # hCritA = −1e5 and the rest of the column is near −100.
+        h_mean = 0.0
+        area_total = 0.0
+        for i in range(s.NumNP - 1):
+            dx_i = s.x[i + 1] - s.x[i]
+            h_mean += 0.5 * (s.hNew[i] + s.hNew[i + 1]) * dx_i
+            area_total += dx_i
+        h_mean = h_mean / area_total if area_total > 0 else float(s.hNew.mean())
         f.write(f" h Mean   [L]        {h_mean:11.5E}  {h_mean:11.5E}\n")
         # Fortran SubReg writes the *instantaneous* fluxes at the print time
         # — not the time-averaged values.  We stash them on the state from

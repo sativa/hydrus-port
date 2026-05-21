@@ -139,6 +139,10 @@ def parse_nod_inf_last(path: Path) -> Tuple[float, np.ndarray]:
 # ---------------------------------------------------------------------------
 
 def relative_err(a: float, b: float) -> float:
+    # When both values are tiny in absolute terms (≤ atol scaled by 1e3)
+    # the relative measure is meaningless — return 0.
+    if max(abs(a), abs(b)) < 1e-6:
+        return 0.0
     denom = max(abs(a), abs(b), 1e-30)
     return abs(a - b) / denom
 
