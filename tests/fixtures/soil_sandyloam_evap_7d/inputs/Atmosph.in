@@ -1,0 +1,17 @@
+Pcp_File_Version=4
+*** BLOCK J: ATMOSPHERIC INFORMATION **********************************
+MaxAL
+  7
+lDayVar lSinPrec lLAI
+ f f f
+hCritS
+0
+tAtm        Prec        rSoil       rRoot       hCritA      rB     hB     hT     tTop  tBot  Ampl
+  1  0  0.4  0  -100000  0  0  0  0  0  0
+  2  0  0.5  0  -100000  0  0  0  0  0  0
+  3  0.5  0.3  0  -100000  0  0  0  0  0  0
+  4  0  0.6  0  -100000  0  0  0  0  0  0
+  5  1.2  0.2  0  -100000  0  0  0  0  0  0
+  6  0  0.4  0  -100000  0  0  0  0  0  0
+  7  0  0.5  0  -100000  0  0  0  0  0  0
+*** END OF INPUT FILE 'ATMOSPH.IN' ***
