@@ -320,21 +320,46 @@ def solve_water_flow(
         for i in range(N):
             theta[i] = theta[i] + Cap[i] * (hNew[i] - hTemp[i]) * Rate
     
-    # Compute boundary fluxes
-    vTop_out = _compute_top_flux(
-        N, x, hNew, hOld, theta, MatNum, ParD, iModel, iHyst,
-        iDualPor, dt, Con, Cap, Sink, SinkIm, Ah, AK, ATh,
-        CosAlf, lCentrif, Radius, lGeom, lDensity, lVapor,
-        lWTDep, Temp, ConLT, ConVT, ConVh, ThVOld, ThVNew,
-        WLayer,
-    )
-    
-    vBot_out = _compute_bottom_flux(
-        N, x, hNew, hOld, theta, MatNum, ParD, iModel, iHyst,
-        iDualPor, dt, Con, Cap, Sink, SinkIm, Ah, AK, ATh,
-        CosAlf, lCentrif, Radius, lGeom, lDensity, lVapor,
-        lWTDep, Temp, ConLT, ConVT, ConVh, ThVOld, ThVNew,
-    )
+    # Compute boundary fluxes.  For *flux*-prescribed BCs (KodTop ≤ 0 with
+    # rTop given, or FreeD/qGWLF at the bottom) we want the actual imposed
+    # flux at the surface — not the Darcy expression evaluated at the
+    # adjacent internal edge.  The two coincide only at steady state;
+    # during a transient the difference shows up as mass-balance drift.
+    if KodTop <= 0 and abs(KodTop) != 4 and abs(KodTop) != 1:
+        vTop_out = _compute_top_flux(
+            N, x, hNew, hOld, theta, MatNum, ParD, iModel, iHyst,
+            iDualPor, dt, Con, Cap, Sink, SinkIm, Ah, AK, ATh,
+            CosAlf, lCentrif, Radius, lGeom, lDensity, lVapor,
+            lWTDep, Temp, ConLT, ConVT, ConVh, ThVOld, ThVNew,
+            WLayer,
+        )
+    elif KodTop <= 0:
+        # Flux-type atmospheric BC: rTop is the prescribed surface flux.
+        # HYDRUS convention: rTop > 0 = water out (evap), so vTop ≡ rTop.
+        vTop_out = rTop
+    else:
+        # Head-prescribed BC: compute the actual flux that the head pin
+        # imposes via the top-edge Darcy expression.
+        vTop_out = _compute_top_flux(
+            N, x, hNew, hOld, theta, MatNum, ParD, iModel, iHyst,
+            iDualPor, dt, Con, Cap, Sink, SinkIm, Ah, AK, ATh,
+            CosAlf, lCentrif, Radius, lGeom, lDensity, lVapor,
+            lWTDep, Temp, ConLT, ConVT, ConVh, ThVOld, ThVNew,
+            WLayer,
+        )
+
+    if KodBot == -5:
+        # Free drainage: vBot = -K(h_bot).
+        M_bot = int(MatNum[0])
+        ConB_bot = (Con[0] + Con[1]) / 2.0
+        vBot_out = -ConB_bot * CosAlf
+    else:
+        vBot_out = _compute_bottom_flux(
+            N, x, hNew, hOld, theta, MatNum, ParD, iModel, iHyst,
+            iDualPor, dt, Con, Cap, Sink, SinkIm, Ah, AK, ATh,
+            CosAlf, lCentrif, Radius, lGeom, lDensity, lVapor,
+            lWTDep, Temp, ConLT, ConVT, ConVh, ThVOld, ThVNew,
+        )
     
     return hNew, vTop_out, vBot_out, KodTop, KodBot, Iter, converged
 

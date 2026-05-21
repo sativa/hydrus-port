@@ -621,6 +621,8 @@ class Hydrus1DSimulation:
                 retry += 1
             s.LastIter = Iter
             s.LastConv = conv
+            s.last_vTop = float(vTop)
+            s.last_vBot = float(vBot)
 
             # Recompute theta + Con consistently with the new heads.
             for i in range(N):
@@ -1084,8 +1086,11 @@ class Hydrus1DSimulation:
         f.write(f" W-volume [L]        {wsNow:11.5E}  {wsNow:11.5E}\n")
         h_mean = float(np.mean(s.hNew))
         f.write(f" h Mean   [L]        {h_mean:11.5E}  {h_mean:11.5E}\n")
-        topflux = s.CumQ[0] / max(t, 1e-30) if t > 0 else 0.0
-        botflux = s.CumQ[1] / max(t, 1e-30) if t > 0 else 0.0
+        # Fortran SubReg writes the *instantaneous* fluxes at the print time
+        # — not the time-averaged values.  We stash them on the state from
+        # the most recent solve step.
+        topflux = float(getattr(s, "last_vTop", 0.0))
+        botflux = float(getattr(s, "last_vBot", 0.0))
         f.write(f" Top Flux [L/T]      {topflux:11.5E}\n")
         f.write(f" Bot Flux [L/T]      {botflux:11.5E}\n")
         # HYDRUS sign convention: vTop > 0 means upward at the top (water
