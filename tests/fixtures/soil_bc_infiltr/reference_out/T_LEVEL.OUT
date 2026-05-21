@@ -1,6 +1,6 @@
  ******* Program HYDRUS
  ******* Brooks-Corey: ponded infiltration into dry loam                         
- Date:  21. 5.    Time:  23:32:43
+ Date:  21. 5.    Time:  23:52: 3
  Units: L = cm   , T = days , M = g    
 
        Time          rTop        rRoot        vTop         vRoot                                                                    vBot       sum(rTop)   sum(rRoot)    sum(vTop)   sum(vRoot)                                                                sum(vBot)      hTop         hRoot        hBot        RunOff                                                                sum(RunOff)     Volume     sum(Infil)    sum(Evap) TLevel Cum(WTr                                                            ans)  SnowLayer

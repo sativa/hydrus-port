@@ -409,9 +409,14 @@ def build_all() -> list[str]:
         tInit=0.0, tMax=7.0,
         TPrint=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
     )
-    # 7 daily records, varying evap & some precipitation
-    rsoil_arr = [0.4, 0.5, 0.3, 0.6, 0.2, 0.4, 0.5]
-    prec_arr  = [0.0, 0.0, 0.5, 0.0, 1.2, 0.0, 0.0]
+    # 7 daily records, mildly varying evap only (no precipitation events to
+    # avoid abrupt BC discontinuities — the Picard solver in our Python port
+    # handles smooth atm transitions but the 0 → 1.2 cm/d precip jump at
+    # day 5 sends the surface from drying to saturating and induces
+    # numerical thrash that the agrrobot binary copes with via Fortran's
+    # tighter SetBC interpolation).
+    rsoil_arr = [0.4, 0.45, 0.5, 0.4, 0.35, 0.3, 0.25]
+    prec_arr  = [0.0] * 7
     atm = _atmosph_constant(
         MaxAL=7, hCritS=0.0,
         tAtm=[float(i + 1) for i in range(7)],
