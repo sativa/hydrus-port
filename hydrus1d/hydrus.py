@@ -576,34 +576,51 @@ class Hydrus1DSimulation:
             if abs(s.t - s.tEnd) <= 0.5 * s.dtMin or s.t > s.tEnd:
                 break
 
-            # --- one full time step ---------------------------------------
+            # --- one full time step (with retry on non-convergence) -------
             dt = float(min(s.dt, s.tEnd - s.t))
+            h_snap = s.hNew.copy()
+            th_snap = s.thNew.copy()
+            con_snap = s.Con.copy()
+            cap_snap = s.Cap.copy()
+            kt_snap, kb_snap = s.KodTop, s.KodBot
+            retry = 0
+            while True:
+                # hOld / thOld are the values at t (frozen across the Picard
+                # sweep and across any retries inside this time step).
+                s.hOld[:] = h_snap
+                s.thOld[:] = th_snap
+                s.hNew[:] = h_snap
+                s.thNew[:] = th_snap
+                s.Con[:] = con_snap
+                s.Cap[:] = cap_snap
+                s.KodTop, s.KodBot = kt_snap, kb_snap
 
-            # Snapshot old for the time-derivative term in Richards eqn
-            s.hOld[:] = s.hNew
-            s.thOld[:] = s.thNew
-
-            # Picard sweep handled inside solve_water_flow
-            s.hNew, vTop, vBot, s.KodTop, s.KodBot = solve_water_flow(
-                N, s.x, s.hNew, s.hOld, s.hTemp,
-                s.MatNum, s.ParD, s.ParW,
-                s.iModel, s.iHyst, s.iDualPor,
-                dt, s.KodTop, s.KodBot, s.rTop, s.rBot,
-                s.Sink, s.SinkIm, s.Ah, s.AK, s.ATh,
-                s.Con, s.Cap, s.thNew,
-                s.CosAlf, s.lCentrif, s.Radius,
-                s.lGeom, s.lDensity, s.lVapor,
-                s.lWTDep, s.TempN, None, None, None,
-                None, None, s.hSeep, s.SeepF,
-                s.TopInF, s.hCritA, s.WLayer,
-                s.qGWLF, s.GWL0L, s.Aqh, s.Bqh,
-                s.qDrain,
-                hTop_in=getattr(s, 'hTop', s.hNew[-1]),
-                hBot_in=getattr(s, 'hBot', s.hNew[0]),
-                TolTh=getattr(s, 'TolTh', 0.001),
-                TolH=getattr(s, 'TolH', 1.0),
-                MaxIt_in=getattr(s, 'MaxIt', 20),
-            )
+                s.hNew, vTop, vBot, s.KodTop, s.KodBot, Iter, conv = solve_water_flow(
+                    N, s.x, s.hNew, s.hOld, s.hTemp,
+                    s.MatNum, s.ParD, s.ParW,
+                    s.iModel, s.iHyst, s.iDualPor,
+                    dt, s.KodTop, s.KodBot, s.rTop, s.rBot,
+                    s.Sink, s.SinkIm, s.Ah, s.AK, s.ATh,
+                    s.Con, s.Cap, s.thNew,
+                    s.CosAlf, s.lCentrif, s.Radius,
+                    s.lGeom, s.lDensity, s.lVapor,
+                    s.lWTDep, s.TempN, None, None, None,
+                    None, None, s.hSeep, s.SeepF,
+                    s.TopInF, s.hCritA, s.WLayer,
+                    s.qGWLF, s.GWL0L, s.Aqh, s.Bqh,
+                    s.qDrain,
+                    hTop_in=getattr(s, 'hTop', s.hNew[-1]),
+                    hBot_in=getattr(s, 'hBot', s.hNew[0]),
+                    TolTh=getattr(s, 'TolTh', 0.001),
+                    TolH=getattr(s, 'TolH', 1.0),
+                    MaxIt_in=getattr(s, 'MaxIt', 20),
+                )
+                if conv or dt <= s.dtMin * 1.0001 or retry >= 5:
+                    break
+                dt = max(dt / 3.0, s.dtMin)
+                retry += 1
+            s.LastIter = Iter
+            s.LastConv = conv
 
             # Recompute theta + Con consistently with the new heads.
             for i in range(N):
@@ -951,23 +968,44 @@ class Hydrus1DSimulation:
         v[0] = v[1]
 
     def _adapt_dt(self, dt_used: float) -> None:
-        """Conservative dt growth — only ramp up by a small factor and never
-        beyond dtMax. The Fortran TmCont uses Picard iter counts to decide,
-        but :func:`solve_water_flow` does not currently return the iteration
-        count, so we stick to a fixed mild growth and clamp by the next
-        ``TPrint`` event."""
+        """Port of Fortran TmCont (TIME.FOR).
+
+        - ``Iter <= ItMin`` (typically 3): grow dt by ``dMul`` (≈ 1.3).
+        - ``Iter >= ItMax`` (typically 7): shrink dt by ``dMul2`` (≈ 0.7).
+        - Otherwise: keep dt.
+
+        After the per-iter update the new dt is capped by ``dtMax``, the next
+        ``TPrint`` event, and the remaining time to ``tEnd``; it is floored at
+        ``dtMin``.
+        """
         s = self.state
-        # Mild growth — 1.05x per step keeps the Picard solver well-behaved
-        # for variably-saturated cases.  Aggressive (1.3x) growth caused
-        # divergence on the evap fixture; the speed-up was not worth the
-        # robustness loss.
-        new_dt = dt_used * 1.05
+        Iter = getattr(s, "LastIter", 1)
+        ItMin = int(getattr(s, "ItMin", 3))
+        ItMax = int(getattr(s, "ItMax", 7))
+        dMul = float(getattr(s, "dMul", 1.3))
+        dMul2 = float(getattr(s, "dMul2", 0.7))
+
+        if Iter <= ItMin:
+            new_dt = dt_used * dMul
+        elif Iter >= ItMax:
+            new_dt = dt_used * dMul2
+        else:
+            new_dt = dt_used
+
         new_dt = max(s.dtMin, min(new_dt, s.dtMax))
         if hasattr(s, "TPrint"):
             for tp in s.TPrint:
                 if tp > s.t + 1e-12:
                     new_dt = min(new_dt, tp - s.t)
                     break
+        # Also cap by atmospheric record boundary
+        if hasattr(s, "MaxAL") and s.MaxAL > 0 and hasattr(self, "atmos_data"):
+            tAtm_arr = self.atmos_data.get("tAtm")
+            if tAtm_arr is not None:
+                for ta in tAtm_arr:
+                    if ta > s.t + 1e-12:
+                        new_dt = min(new_dt, float(ta - s.t))
+                        break
         new_dt = min(new_dt, s.tEnd - s.t)
         s.dt = max(new_dt, s.dtMin)
 
@@ -1050,7 +1088,12 @@ class Hydrus1DSimulation:
         botflux = s.CumQ[1] / max(t, 1e-30) if t > 0 else 0.0
         f.write(f" Top Flux [L/T]      {topflux:11.5E}\n")
         f.write(f" Bot Flux [L/T]      {botflux:11.5E}\n")
-        wbalT = wsNow - ws_initial - (s.CumQ[0] - s.CumQ[1])
+        # HYDRUS sign convention: vTop > 0 means upward at the top (water
+        # leaves the column), vBot > 0 means upward at the bottom (water
+        # enters the column from below). Net inflow integral = −CumQ[0] +
+        # CumQ[1].  Mass balance residual:
+        #     wbalT = ΔStorage − net inflow = ΔS + CumQ[0] − CumQ[1]
+        wbalT = (wsNow - ws_initial) + s.CumQ[0] - s.CumQ[1]
         wbalR = 100.0 * abs(wbalT) / max(abs(s.CumQ[0] - s.CumQ[1]),
                                          abs(wsNow), 1e-30)
         f.write(f" WatBalT  [L]        {wbalT:11.5E}\n")

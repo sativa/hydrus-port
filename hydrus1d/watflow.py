@@ -85,7 +85,7 @@ def solve_water_flow(
     TolTh: float = 0.001,
     TolH: float = 1.0,
     MaxIt_in: int = 20,
-) -> Tuple[NDArray[np.float64], float, float, int, int]:
+) -> Tuple[NDArray[np.float64], float, float, int, int, int, bool]:
     """
     Solve water flow equation for one time step.
     
@@ -204,7 +204,10 @@ def solve_water_flow(
     # Newton-Raphson iteration loop (Fortran: label 12..18). Tolerances come
     # from Selector.in (TolTh defaults to 0.001, TolH to 1.0 in HYDRUS).
     MaxIt = MaxIt_in
-    rMax = 1e4
+    # rMax matches Fortran WATFLOW.FOR:35 (rMax=1e10). The original Python
+    # used 1e4 which forced non-convergence as soon as hNew reached hCritA
+    # (typically −1e5 for atmospheric BCs).
+    rMax = 1.0e10
     Rate = 1.0  # relaxation factor (Fortran: Rate based on TauW)
     
     # Save old water content for RHS computation
@@ -216,7 +219,20 @@ def solve_water_flow(
     
     Iter = 0
     converged = False
-    
+
+    # Pre-step BC switch. Calling shift_bc *once* at the start of the time
+    # step (with the previous step's converged hNew) avoids the Picard
+    # chattering between flux/head BC types that the Fortran code somehow
+    # survives through subtle ordering tricks.
+    KodTop, KodBot, rTop, _ = shift_bc(
+        N, KodTop, rTop, rBot, 0.0, 0.0, hCritA,
+        CosAlf, WLayer, Con, hNew, x, TopInf, KodBot,
+        theta, theta_old, Sink, dt, lVapor, lWTDep,
+        ConLT, Temp, ConVh, ConVT, iDualPor, SinkIm,
+        lDensity, np.zeros((1, N)), 0, lCentrif, Radius,
+        hSeep, SeepF,
+    )
+
     while Iter < MaxIt:
         Iter += 1
         
@@ -242,16 +258,10 @@ def solve_water_flow(
             qDrain=qDrain, GWL0L=GWL0L, Aqh=Aqh, Bqh=Bqh,
         )
 
-        # Port of WATFLOW.FOR Shift — possibly switches KodTop between
-        # flux (-4) and head (+4 at hCritA) when the surface dries.
-        KodTop, KodBot, rTop, _rBot_unused = shift_bc(
-            N, KodTop, rTop, rBot, 0.0, 0.0, hCritA,
-            CosAlf, WLayer, Con, hNew, x, TopInf, KodBot,
-            theta, theta_old, Sink, dt, lVapor, lWTDep,
-            ConLT, Temp, ConVh, ConVT, iDualPor, SinkIm,
-            lDensity, np.zeros((1, N)), 0, lCentrif, Radius,
-            hSeep, SeepF,
-        )
+        # NOTE: shift_bc is now called *once* before the Picard loop, not
+        # per iteration.  That keeps the BC type fixed across the inner
+        # iterations and prevents the chattering observed when the surface
+        # crosses hCritA.
         # When Shift has just promoted KodTop to +4 (head BC at hCritA)
         # the Gauss step must know the prescribed head. For BCs that were
         # already positive (e.g. KodTop=+1 with a pre-specified head from
@@ -326,7 +336,7 @@ def solve_water_flow(
         lWTDep, Temp, ConLT, ConVT, ConVh, ThVOld, ThVNew,
     )
     
-    return hNew, vTop_out, vBot_out, KodTop, KodBot
+    return hNew, vTop_out, vBot_out, KodTop, KodBot, Iter, converged
 
 
 def _set_mat_properties(
