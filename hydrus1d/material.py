@@ -590,25 +590,39 @@ def _h_num_min(n: float, Alfa: float) -> float:
 
 
 def _qnorm(x: float) -> float:
+    """Upper-tail normal probability used by the Kosugi (iModel=4) model.
+
+    Matches Fortran ``qnorm`` (MATERIAL.FOR:623-636):
+
+        z      = |x| / sqrt(2)
+        t      = 1 / (1 + 0.5·z)
+        erfc(z) ≈ t·exp(-z² + polynomial(t))             # A&S 7.1.26
+        if x < 0:  erfc = 2 - erfc
+        qnorm  = erfc / 2
+
+    This is **1 - Phi(x)** (upper-tail of standard normal), NOT Phi(x).
+    The previous Python implementation returned Phi(x) which inverted the
+    Kosugi water-content curve (theta increased instead of decreased as
+    the soil dried), so an evap_v4-style scenario with iModel=4 saturated
+    the column to ths instead of draining it.
     """
-    Normal cumulative distribution function.
-    
-    Approximation matching Fortran qnorm used in Kosugi model.
-    Uses Abramowitz and Stegun approximation 7.1.26.
-    """
-    # Abramowitz and Stegun approximation
-    a1 = 0.254829592
-    a2 = -0.284496736
-    a3 = 1.421413741
-    a4 = -1.453152027
-    a5 = 1.061405429
-    p = 0.3275911
-    
-    sign = 1 if x >= 0 else -1
-    x_abs = abs(x)
-    t = 1.0 / (1.0 + p * x_abs)
-    y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * np.exp(-x_abs * x_abs / 2.0)
-    return 0.5 * (1.0 + sign * y)
+    z = abs(x) / np.sqrt(2.0)
+    t = 1.0 / (1.0 + 0.5 * z)
+    erfc = t * np.exp(
+        -z * z - 1.26551223
+        + t * (1.00002368
+        + t * (0.37409196
+        + t * (0.09678418
+        + t * (-0.18628806
+        + t * (0.27886807
+        + t * (-1.13520398
+        + t * (1.48851587
+        + t * (-0.82215223
+        + t * 0.17087277))))))))
+    )
+    if x < 0:
+        erfc = 2.0 - erfc
+    return erfc / 2.0
 
 
 def _invert_dual_porosity(Qe: float, Par: NDArray[np.float64]) -> float:

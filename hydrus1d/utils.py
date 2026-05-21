@@ -142,6 +142,11 @@ def solve_tridiagonal(
         hNew_out[N - 1] = hTop
         hNew_out[N - 2] = Pw[N - 2] / Rw[N - 2]
     else:
+        # Guard Rw[N-1] against the Fortran ``if(dabs(R(N-1)).lt.rMin) R(N-1)=rMin``
+        # rule — without it, free-drainage cases that briefly drive RT toward
+        # zero (e.g. during sharp BC switching) trigger numpy divide-by-zero.
+        if abs(Rw[N - 1]) < rMin:
+            Rw[N - 1] = rMin
         hNew_out[N - 1] = Pw[N - 1] / Rw[N - 1]
         hNew_out[N - 2] = (Pw[N - 2] - Sw[N - 2] * hNew_out[N - 1]) / Rw[N - 2]
     
