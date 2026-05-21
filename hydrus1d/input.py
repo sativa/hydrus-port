@@ -411,6 +411,119 @@ def _read_record_typed(r: FortranReader, types: List[type]) -> List[Any]:
 
 # nTabMod is set by Init() to 10 (the canonical 'sentinel' for table input).
 NTAB_MOD = 10
+# Default table length (Fortran HYDRUS.FOR Init: NTab(1) = 100).
+NTAB_DEFAULT = 100
+
+
+def gen_mat_tables(sel: Dict[str, Any]) -> None:
+    """Direct port of INPUT.FOR:762-862 GenMat.
+
+    Builds log-spaced ``hTab(NTab, NMat)`` and the corresponding
+    ``ConTab/CapTab/TheTab`` tables.  Fortran SetMat then *linearly*
+    interpolates these in physical-h space (not log-h) — replicating that
+    interpolation exactly is the only way to match the surface boundary
+    flux of the Fortran binary at the 0.3 % level.
+    """
+    from .material import FK, FC, FQ, FH
+
+    iModel = sel.get("iModel", 0)
+    if iModel >= NTAB_MOD:
+        return                            # table input cases not handled here
+    if not sel.get("lTable", True):
+        return                            # skip if user disabled tables
+
+    NMat = sel["NMat"]
+    ParD = sel["ParD"]
+    NTab = NTAB_DEFAULT
+
+    hTab1 = float(sel["hTab1"])
+    hTabN = float(sel["hTabN"])
+    if hTab1 == 0.0 or hTabN == 0.0 or hTab1 == hTabN:
+        return
+
+    import math as _math
+    alh1 = _math.log10(-hTab1)
+    alhN = _math.log10(-hTabN)
+    dlh = (alhN - alh1) / (NTab - 1)
+
+    hTab = np.zeros((NTab, NMat), dtype=np.float64)
+    ConTab = np.zeros((NTab, NMat), dtype=np.float64)
+    CapTab = np.zeros((NTab, NMat), dtype=np.float64)
+    TheTab = np.zeros((NTab, NMat), dtype=np.float64)
+    hSat = np.zeros(NMat, dtype=np.float64)
+    ConSat = np.zeros(NMat, dtype=np.float64)
+
+    for M in range(NMat):
+        hSat[M] = FH(iModel, 1.0, ParD[:, M])
+        ConSat[M] = ParD[4, M]
+        for i in range(NTab):
+            alh = alh1 + i * dlh
+            h_val = -10.0 ** alh
+            hTab[i, M] = h_val
+            ConTab[i, M] = FK(iModel, h_val, ParD[:, M])
+            CapTab[i, M] = FC(iModel, h_val, ParD[:, M])
+            TheTab[i, M] = FQ(iModel, h_val, ParD[:, M])
+
+    sel["NTab"] = NTab
+    sel["hTab"] = hTab
+    sel["ConTab"] = ConTab
+    sel["CapTab"] = CapTab
+    sel["TheTab"] = TheTab
+    sel["hSat_M"] = hSat
+    sel["ConSat"] = ConSat
+    sel["alh1"] = alh1
+    sel["dlh"] = dlh
+
+
+def interp_K(h: float, M: int, sel: Dict[str, Any]) -> float:
+    """Fortran-style linear-in-h interpolation of K from the table.
+
+    Falls back to analytical FK when h falls outside the tabulated range.
+    """
+    from .material import FK
+    if "hTab" not in sel:
+        return FK(sel.get("iModel", 0), h, sel["ParD"][:, M])
+    hTab = sel["hTab"]; ConTab = sel["ConTab"]
+    NTab = sel["NTab"]; alh1 = sel["alh1"]; dlh = sel["dlh"]
+    hSat = sel["hSat_M"][M]
+    if h >= hSat:
+        return float(sel["ConSat"][M])
+    import math as _math
+    if not (hTab[NTab - 1, M] <= h <= hTab[0, M]):
+        return FK(sel.get("iModel", 0), h, sel["ParD"][:, M])
+    iT = int((_math.log10(-h) - alh1) / dlh)
+    iT = max(0, min(iT, NTab - 2))
+    dh = (h - hTab[iT, M]) / (hTab[iT + 1, M] - hTab[iT, M])
+    return float(ConTab[iT, M] + (ConTab[iT + 1, M] - ConTab[iT, M]) * dh)
+
+
+def interp_theta_cap(h: float, M: int, sel: Dict[str, Any]) -> tuple[float, float]:
+    """Linear-in-h interpolation of (theta, Cap) from the table.
+
+    Falls back to analytical FQ/FC outside the range.  Returns
+    ``(theta, Cap)``.
+    """
+    from .material import FQ, FC
+    iModel = sel.get("iModel", 0)
+    if "hTab" not in sel:
+        return (float(FQ(iModel, h, sel["ParD"][:, M])),
+                float(FC(iModel, h, sel["ParD"][:, M])))
+    hTab = sel["hTab"]; TheTab = sel["TheTab"]; CapTab = sel["CapTab"]
+    NTab = sel["NTab"]; alh1 = sel["alh1"]; dlh = sel["dlh"]
+    hSat = sel["hSat_M"][M]
+    if h >= hSat:
+        # Saturated
+        return float(sel["ParD"][1, M]), 0.0
+    import math as _math
+    if not (hTab[NTab - 1, M] <= h <= hTab[0, M]):
+        return (float(FQ(iModel, h, sel["ParD"][:, M])),
+                float(FC(iModel, h, sel["ParD"][:, M])))
+    iT = int((_math.log10(-h) - alh1) / dlh)
+    iT = max(0, min(iT, NTab - 2))
+    dh = (h - hTab[iT, M]) / (hTab[iT + 1, M] - hTab[iT, M])
+    theta = float(TheTab[iT, M] + (TheTab[iT + 1, M] - TheTab[iT, M]) * dh)
+    cap = float(CapTab[iT, M] + (CapTab[iT + 1, M] - CapTab[iT, M]) * dh)
+    return theta, cap
 
 
 def _read_mat_in(r: FortranReader, sel: Dict[str, Any]) -> None:
@@ -925,6 +1038,9 @@ def read_selector(path: str) -> Dict[str, Any]:
         if sel.get("SinkF", False):
             _read_sink_in(r, sel)
     _populate_aliases(sel)
+    # Build K / theta / Cap lookup tables (Fortran GenMat).  This MUST run
+    # after MatIn so that ParD / hTab1 / hTabN / lTable are populated.
+    gen_mat_tables(sel)
     return sel
 
 
@@ -1167,16 +1283,16 @@ def read_profile(path: str, sel: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _compute_theta_from_h(prof: Dict[str, Any], sel: Dict[str, Any]) -> None:
-    """Populate thNew/thOld from hNew via FQ()."""
-    from .material import FQ
+    """Populate thNew/thOld from hNew via the same table interpolation that
+    Fortran's SetMat uses so the initial water-volume matches the Fortran
+    binary at the 1e-4 level rather than via analytical FQ."""
     NumNP = prof["NumNP"]
-    iModel = sel.get("iModel", 0)
-    ParD = sel["ParD"]
     hNew = prof["hNew"]
     th = np.zeros(NumNP, dtype=np.float64)
     for i in range(NumNP):
         M = int(prof["MatNum"][i]) - 1
-        th[i] = FQ(iModel, hNew[i], ParD[:, M])
+        theta_i, _ = interp_theta_cap(float(hNew[i]), M, sel)
+        th[i] = theta_i
     prof["thNew"] = th
     prof["thOld"] = th.copy()
 

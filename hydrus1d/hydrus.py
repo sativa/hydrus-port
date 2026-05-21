@@ -614,6 +614,7 @@ class Hydrus1DSimulation:
                     TolTh=getattr(s, 'TolTh', 0.001),
                     TolH=getattr(s, 'TolH', 1.0),
                     MaxIt_in=getattr(s, 'MaxIt', 20),
+                    tables=self._gen_tables(),
                 )
                 if conv or dt <= s.dtMin * 1.0001 or retry >= 5:
                     break
@@ -624,11 +625,15 @@ class Hydrus1DSimulation:
             s.last_vTop = float(vTop)
             s.last_vBot = float(vBot)
 
-            # Recompute theta + Con consistently with the new heads.
+            # Update Con from the converged head; do NOT overwrite thNew with
+            # FQ(hNew).  solve_water_flow returns thNew with the
+            # mass-conservative update (Celia/Bouloutas/Zarba 1990):
+            #     thNew = thNew + Cap*(hNew − hTemp)
+            # applied at the post-convergence Picard step.  Recomputing thNew
+            # from FQ(hNew) here would replace the conservative value with the
+            # *analytical* one and break the water mass balance.
             for i in range(N):
                 M = int(s.MatNum[i])
-                s.thNew[i] = max(FQ(s.iModel, s.hNew[i], s.ParD[:, M]),
-                                 s.ParD[0, M])
                 s.Con[i] = FK(s.iModel, s.hNew[i], s.ParD[:, M])
 
             self._update_velocity(use_new=True)
@@ -892,6 +897,24 @@ class Hydrus1DSimulation:
     # ========================================================================
     # Helper methods used by run()
     # ========================================================================
+
+    def _gen_tables(self) -> dict | None:
+        """Bundle the GenMat-built table arrays into the dict that
+        ``solve_water_flow`` / ``_set_mat_properties`` look up."""
+        s = self.state
+        if not hasattr(s, "hTab"):
+            return None
+        return {
+            "hTab": s.hTab,
+            "ConTab": s.ConTab,
+            "CapTab": s.CapTab,
+            "TheTab": s.TheTab,
+            "NTab": int(s.NTab),
+            "alh1": float(s.alh1),
+            "dlh": float(s.dlh),
+            "hSat_M": s.hSat_M,
+            "ConSat": s.ConSat,
+        }
 
     def _open_outputs(self) -> None:
         """Open the standard HYDRUS-1D output files (NOD_INF/T_LEVEL/BALANCE).

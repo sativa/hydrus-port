@@ -85,6 +85,7 @@ def solve_water_flow(
     TolTh: float = 0.001,
     TolH: float = 1.0,
     MaxIt_in: int = 20,
+    tables: dict | None = None,
 ) -> Tuple[NDArray[np.float64], float, float, int, int, int, bool]:
     """
     Solve water flow equation for one time step.
@@ -239,12 +240,13 @@ def solve_water_flow(
         # Save current heads as temporary (Fortran: hTemp = hNew before solve)
         hTemp[:] = hNew.copy()
         
-        # Compute soil hydraulic properties
+        # Compute soil hydraulic properties (uses the GenMat table if
+        # supplied via ``tables`` — matching the Fortran SetMat code path).
         _set_mat_properties(
             N, x, hNew, hOld, hTemp, MatNum, ParD, ParW,
             iModel, Con, Cap, theta, Ah, AK, ATh,
             CosAlf, lCentrif, Radius, lGeom, lWTDep, Temp,
-            ConLT, ConVT, ConVh, lDensity,
+            ConLT, ConVT, ConVh, lDensity, tables=tables,
         )
         
         # Assemble tridiagonal system
@@ -282,6 +284,36 @@ def solve_water_flow(
             KodTop, KodBot, hTop_val, hBot_val,
             PB=PB, RB=RB, SB_coef=SB, PT=PT, RT=RT, ST=ST,
         )
+
+        # Post-Gauss clamping — direct port of WATFLOW.FOR:95-101. This is
+        # the *single* mechanism Fortran uses to keep an evaporation-induced
+        # wetting front from diffusing artificially down the column:
+        #   1. clamp |hNew| ≤ rMax
+        #   2. when the surface is at hCritA (KodTop = ±4), pin every node in
+        #      the top 10 % of the profile that has dropped below hCritA and
+        #      has no compensating sink back to hCritA.  Without this the
+        #      Picard solution spreads the −10⁵ surface head into the bulk
+        #      of the column in just a few time steps.
+        top10 = int(0.9 * N)
+        clamped = np.zeros(N, dtype=bool)
+        for i in range(N):
+            if abs(hNew[i]) > rMax:
+                hNew[i] = rMax if hNew[i] >= 0 else -rMax
+            if abs(KodTop) == 4 and hNew[i] < hCritA and i == N - 1:
+                hNew[i] = hCritA
+                clamped[i] = True
+            if (abs(KodTop) == 4 and hNew[i] < hCritA
+                    and i > top10 and Sink[i] <= 0.0):
+                hNew[i] = hCritA
+                clamped[i] = True
+        # Sync theta with the clamped heads so the post-iteration mass update
+        # ``theta += Cap·Δh`` does not leave theta inconsistent with h on the
+        # pinned nodes.
+        if clamped.any():
+            from .material import FQ
+            for i in np.where(clamped)[0]:
+                M = int(MatNum[i])
+                theta[i] = FQ(iModel, hNew[i], ParD[:, M])
         
         # Check convergence (Fortran: label 14..15)
         ItCrit = True
@@ -305,7 +337,13 @@ def solve_water_flow(
                     Iter = MaxIt  # force exit
                 break
         
-        if ItCrit:
+        # WATFLOW.FOR:128 — force at least 2 Picard iterations (3 when
+        # hysteresis is on).  With a single iteration the linear system can
+        # spuriously satisfy ItCrit when the system has only just been
+        # perturbed by the BC, leading to numerical diffusion of sharp
+        # wetting / drying fronts.
+        min_iters = 3 if iHyst > 0 else 2
+        if ItCrit and Iter >= min_iters:
             converged = True
             break
 
@@ -390,15 +428,28 @@ def _set_mat_properties(
     ConVT: NDArray[np.float64] | None = None,
     ConVh: NDArray[np.float64] | None = None,
     lDensity: bool = False,
+    tables: dict | None = None,
 ):
     """
     Compute soil hydraulic properties at each node.
-    
-    Matches SetMat subroutine in WATFLOW.FOR.
+
+    Matches SetMat subroutine in WATFLOW.FOR. When pre-computed
+    ``tables`` (hTab/ConTab/CapTab/TheTab + alh1/dlh) are supplied we use
+    linear-in-h interpolation, exactly mirroring the Fortran code path.
     """
+    import math as _math
+    use_tables = tables is not None and "hTab" in tables
+    if use_tables:
+        hTab = tables["hTab"]; ConTab = tables["ConTab"]
+        CapTab = tables["CapTab"]; TheTab = tables["TheTab"]
+        alh1 = tables["alh1"]; dlh = tables["dlh"]
+        NTab_tab = tables["NTab"]
+        hSat_M = tables.get("hSat_M")
+        ConSat = tables.get("ConSat")
+
     for i in range(N):
         M = MatNum[i]
-        
+
         # Temperature correction
         AT = 1.0
         BT = 1.0
@@ -408,19 +459,36 @@ def _set_mat_properties(
                  (75.6 - 0.1425 * TempR - 2.38e-4 * TempR ** 2)
             BT = (1.787 - 0.007 * TempR) / (1.0 + 0.03225 * TempR) / \
                  ((1.787 - 0.007 * Temp[i]) / (1.0 + 0.03225 * Temp[i]))
-        
+
         # Compute head for property evaluation
         hi1 = min(ParW[10, M], hTemp[i] / Ah[i] / AT) if Ah[i] != 0 else hTemp[i]
         hi2 = min(ParW[10, M], hNew[i] / Ah[i] / AT) if Ah[i] != 0 else hNew[i]
         hiM = 0.1 * hi1 + 0.9 * hi2
-        
-        # Conductivity (pass full 11-element parameter array for material M)
-        Coni = FK(iModel, hiM, ParD[:, M])
-        
-        # Capacity and water content
-        Capi = FC(iModel, hiM, ParD[:, M])
-        Thei = FQ(iModel, hiM, ParD[:, M])
-        
+
+        if use_tables and hi1 < hSat_M[M] and hi2 < hSat_M[M] \
+                and hTab[NTab_tab - 1, M] <= hiM <= hTab[0, M]:
+            # Table interpolation path — matches WATFLOW.FOR:482-489
+            iT = int((_math.log10(-hiM) - alh1) / dlh)
+            iT = max(0, min(iT, NTab_tab - 2))
+            denom = (hTab[iT + 1, M] - hTab[iT, M])
+            if denom == 0.0:
+                dh = 0.0
+            else:
+                dh = (hiM - hTab[iT, M]) / denom
+            Coni = ConTab[iT, M] + (ConTab[iT + 1, M] - ConTab[iT, M]) * dh
+            Capi = CapTab[iT, M] + (CapTab[iT + 1, M] - CapTab[iT, M]) * dh
+            Thei = TheTab[iT, M] + (TheTab[iT + 1, M] - TheTab[iT, M]) * dh
+        elif use_tables and hi1 >= hSat_M[M] and hi2 >= hSat_M[M]:
+            # Both legs saturated → use the saturated constants
+            Coni = float(ConSat[M])
+            Capi = 0.0
+            Thei = float(ParD[1, M])
+        else:
+            # Analytical fall-back
+            Coni = FK(iModel, hiM, ParD[:, M])
+            Capi = FC(iModel, hiM, ParD[:, M])
+            Thei = FQ(iModel, hiM, ParD[:, M])
+
         # Apply hysteretic corrections
         Con[i] = Coni * AK[i] * BT
         Cap[i] = Capi * ATh[i] / Ah[i] / AT
