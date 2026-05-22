@@ -38,7 +38,8 @@ class SWMS2DSimulation:
     def __init__(self, input_dir: Path | str, output_dir: Path | str,
                  use_anderson: bool = False, anderson_m: int = 3,
                  refine_solve: bool = False, use_newton: bool = False,
-                 use_lscheme: bool = False, lscheme_L: float = 0.0):
+                 use_lscheme: bool = False, lscheme_L: float = 0.0,
+                 use_banded: bool = False):
         """
         Parameters
         ----------
@@ -78,6 +79,7 @@ class SWMS2DSimulation:
         self.use_newton = use_newton
         self.use_lscheme = use_lscheme
         self.lscheme_L = lscheme_L
+        self.use_banded = use_banded
 
         # Parse input
         self.cfg, self.materials, self.time, self.mesh, self.extras = \
@@ -368,6 +370,7 @@ class SWMS2DSimulation:
                         use_newton=self.use_newton,
                         use_lscheme=self.use_lscheme,
                         lscheme_L=self.lscheme_L,
+                        use_banded=self.use_banded,
                     )
                 self.t = t_new
                 self.time.dt = dt_used

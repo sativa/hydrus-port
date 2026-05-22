@@ -445,6 +445,101 @@ def dirich(A: csr_matrix, B: NDArray[np.float64],
 
 
 # ============================================================================
+# Fortran's banded Gauss elimination solver — 1:1 port from WATFLOW2.FOR
+# L486-519 (subroutine Solve). For symmetric positive-definite banded
+# matrices stored as the upper triangle in (MBand, NumNP) format:
+#   A_band[m-1, n] = A[n, n+m-1]   for m = 1..MBand, n = 0..NumNP-1
+# Eliminates without pivoting (relies on diagonal dominance).
+#
+# Why this exists: SuperLU (used by scipy.spsolve) and Fortran banded
+# Gauss take different paths through the floating-point space. At
+# ill-conditioned regimes (e.g. EX.2 dry-spell day 210-212) the two
+# paths produce solutions that differ by O(εκ) and accumulate over
+# Picard iters, eventually exceeding the TolH=0.05 tolerance ball.
+# Using the same algorithm class as Fortran eliminates this drift.
+# ============================================================================
+
+def _solve_banded_fortran(A: csr_matrix,
+                          b: NDArray[np.float64],
+                          ) -> NDArray[np.float64]:
+    """Solve A · x = b via Fortran-style upper-triangular banded Gauss.
+
+    Assumes A is symmetric. Detects the bandwidth from the sparse pattern,
+    extracts the upper triangle to banded form, then runs the in-place
+    elimination identical to WATFLOW2.FOR's Solve subroutine.
+
+    Falls back to scipy.spsolve if A turns out to be too wide-bandwidth
+    for banded storage to be efficient (MBand > 50).
+    """
+    A_coo = A.tocoo()
+    NumNP = A.shape[0]
+    # Compute half-bandwidth
+    rows = A_coo.row
+    cols = A_coo.col
+    MBand_minus1 = int(np.max(np.abs(rows - cols))) if A_coo.nnz else 0
+    MBand = MBand_minus1 + 1
+    if MBand > 50:
+        # Bandwidth too large — banded form would be 50× redundant
+        return spsolve(csc_matrix(A), b)
+    # Build banded storage (upper triangle): A_band[m, n] = A[n, n+m]
+    A_band = np.zeros((MBand, NumNP), dtype=np.float64)
+    for r, c, v in zip(rows, cols, A_coo.data):
+        if c >= r and (c - r) < MBand:
+            # store at A_band[c - r, r] = A[r, c]
+            A_band[c - r, r] += v
+    # Make a working copy of b (Fortran's algorithm mutates)
+    B = b.astype(np.float64, copy=True)
+    # Forward elimination (Fortran 1-based loops translated to 0-based)
+    # for n in 0..NumNP-1: divide row n's diagonal entry into the
+    # rows below it within the band, then store the multiplier in
+    # A_band[m, n] so it can be reused in the elimination of B.
+    for n in range(NumNP - 1):
+        diag = A_band[0, n]
+        if abs(diag) < 1e-30:
+            continue
+        for m in range(1, MBand):
+            a_mn = A_band[m, n]
+            if abs(a_mn) < 1e-30:
+                continue
+            i = n + m
+            if i >= NumNP:
+                break
+            C = a_mn / diag
+            # row i: subtract C * row n's tail starting at column n+m
+            # row i has entries A_band[j, i] = A[i, i+j], j=0..MBand-1
+            # row n's tail entries are A_band[k, n] = A[n, n+k], k=m..MBand-1
+            # offset: A[i, i+j] -= C * A[n, n+k] where i+j = n+k → j = k - m
+            for k in range(m, MBand):
+                j = k - m
+                A_band[j, i] -= C * A_band[k, n]
+            A_band[m, n] = C
+            B[i] -= C * B[n]
+        # B[n] /= diag — but we still need diag for back-sub, so divide later
+    # Forward-substitute the diagonal division pass
+    for n in range(NumNP):
+        diag = A_band[0, n]
+        if abs(diag) > 1e-30:
+            B[n] /= diag
+    # Back substitution: row n -= sum_{k=1..MBand-1} A_band[k, n] * x[n+k] / diag
+    # but A_band[0, n] was already divided, so just subtract A_band[k, n]*B[n+k]
+    for n in range(NumNP - 2, -1, -1):
+        diag = A_band[0, n]
+        if abs(diag) < 1e-30:
+            continue
+        s = 0.0
+        for k in range(1, MBand):
+            i = n + k
+            if i >= NumNP:
+                break
+            # Note: A_band[k, n] was overwritten with the multiplier C above,
+            # which is exactly A[n, n+k]/diag(at the time of elimination).
+            # For back-sub Fortran uses A(k,n) (the multiplier) * B[i].
+            s += A_band[k, n] * B[i]
+        B[n] -= s
+    return B
+
+
+# ============================================================================
 # Iterative refinement of the sparse LU solve.
 #
 # scipy.sparse.linalg.spsolve returns x with the precision of one LU back-
@@ -573,6 +668,7 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
                      use_newton: bool = False,
                      use_lscheme: bool = False,
                      lscheme_L: float = 0.0,
+                     use_banded: bool = False,
                      ) -> tuple[float, float, int, bool,
                                 NDArray[np.float64], NDArray[np.float64],
                                 NDArray[np.float64], NDArray[np.float64]]:
@@ -706,7 +802,9 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
             # Solve
             try:
                 A_csc = csc_matrix(A_dir)
-                if refine_solve:
+                if use_banded:
+                    sol = _solve_banded_fortran(A_dir, B_eff)
+                elif refine_solve:
                     sol = _solve_refined(A_csc, B_eff)
                 else:
                     sol = spsolve(A_csc, B_eff)
