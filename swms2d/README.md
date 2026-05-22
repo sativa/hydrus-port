@@ -14,11 +14,38 @@ Direct 1:1 port of SWMS_2D v1.22 (Simunek 1996), aligned with the existing
 | `material.py` | VG-Mualem + Vogel-Cislerova adapter for hydrus1d.material | ✓ (see note) |
 | `watflow.py` | 2D Richards Galerkin FE solver | ✓ — EX.1 matches Fortran ≤2 hPa |
 | `solute.py` | 2D ADE solver with reaction chain (Crank-Nicholson) | ✓ |
-| `temper.py` | Heat transport (SWMS_2D 1.22 has no source) | ⏳ defer |
+| `temper.py` | Heat transport (from-scratch 2D extension; verified vs analytical) | ✓ |
+| `hysteresis.py` | Scott (1983) drying/wetting scanning curves | ✓ (standalone) |
+| `drain.py` | Subsurface drain BC + Vimoke-Taylor K reduction | ✓ |
 | `output.py` | h.out + th.out + conc.out (other 10 .OUT files pending) | ⚠ partial |
 | `sink.py` | Feddes root water uptake + Beta normalisation | ✓ |
 | `swms2d.py` | Main simulation driver | ✓ |
 | `verify.py` | Compare against Fortran reference | ✓ (via compare_outputs.py) |
+
+## Beyond SWMS_2D 1.22
+
+Three modules **extend** the original Fortran feature set:
+
+- **`temper.py`** — 2D FE heat transport (the original 1.22 has no
+  heat transport at all; HYDRUS-2D/3D added it later). Verified to
+  match the 1D analytical erfc-decay solution within 0.03 K on a
+  semi-infinite slab test (Δ < 0.1 %), and the advection-conduction
+  thermal-front velocity formula `v_th = (C_w/C_v) v` on a 41-node
+  vertical column test.
+
+- **`hysteresis.py`** — Scott (1983) linear-shift scanning curves
+  for soil-water retention. Tracks per-node state {MWC, MDC,
+  internal scanning} and reversal points; validated on a 14-step
+  wetting → drying → re-wetting cycle (all θ between MDC and MWC).
+
+- **`drain.py`** — Subsurface drain Kode=±5 switching with
+  Vimoke-Taylor (1962) effective-K reduction. Mirrors the Fortran's
+  rarely-used `DrainF` branch (none of EX.1-4 exercise it); smoke
+  test verifies all four state transitions.
+
+All three modules are standalone; the main driver does not yet
+auto-integrate heat / hysteresis / drains into the time loop (each
+is invoked explicitly by user code or future driver flags).
 
 ## Verification status (Phase 3)
 
