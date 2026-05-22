@@ -371,6 +371,8 @@ class SWMS2DSimulation:
                         use_lscheme=self.use_lscheme,
                         lscheme_L=self.lscheme_L,
                         use_banded=self.use_banded,
+                        debug_file=getattr(self, 'debug_file', None),
+                        debug_TLevel=self.TLevel,
                     )
                 self.t = t_new
                 self.time.dt = dt_used

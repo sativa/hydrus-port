@@ -56,6 +56,8 @@ def set_snk(mesh: Mesh, materials: list[SoilMaterial],
             M = MatNum[i] - 1
             alfa = f_alfa(TPot, hNew[i], P0, POptm[M], P2H, P2L, P3, r2H, r2L)
             Sink[i] = alfa * Beta[i] * rLen * TPot
+    # Fortran's Sink array is REAL*4 — truncate to float32 to match.
+    Sink = Sink.astype(np.float32).astype(np.float64)
     return Sink
 
 

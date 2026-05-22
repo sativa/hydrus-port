@@ -46,20 +46,23 @@ def to_h1d_par(mat: SoilMaterial) -> NDArray[np.float64]:
 
 
 def select_imodel(mat: SoilMaterial) -> int:
-    """Pick H1D iModel that matches SWMS_2D's behaviour.
+    """Always return 1 (Vogel-Cislerova) to bit-match Fortran's FK/FC/FQ.
 
-    SWMS_2D's FK in MATERIA2.FOR always uses the full Vogel-Cislerova
-    K(h) formula with thm/tha/thk/Kk. It "collapses" to standard VG only
-    when thm == ths, tha == thr, thk == ths, AND Kk == Ks — all four must
-    hold, because thk/Kk control a linear-K segment between Hk and Hs even
-    when thm/tha do not.
+    SWMS_2D's MATERIA2.FOR uses the Vogel-Cislerova formula
+    **unconditionally** — it never branches into the "standard VG"
+    simplification, even when thm==ths, tha==thr, thk==ths, AND Kk==Ks
+    cause the formula to be mathematically equivalent to standard VG.
+
+    The floating-point sequence of operations still differs (extra
+    Qm-Qa, Qees ratio, Hk linear segment), so iModel=0 in hydrus1d
+    gives K values that differ from Fortran by ~2e-4 relative even
+    when parameters collapse. Over the EX.2 Picard iterations this
+    drift accumulated to ~1.1 hPa typical / 17 hPa dry-spell peak.
+
+    Earlier versions of this function returned 0 when parameters
+    collapsed; that optimization was the source of the EX.2 residual.
     """
-    if (abs(mat.thm - mat.ths) < 1e-12
-        and abs(mat.tha - mat.thr) < 1e-12
-        and abs(mat.thk - mat.ths) < 1e-12
-        and abs(mat.Kk  - mat.Ks ) < 1e-12):
-        return 0  # standard VG-Mualem
-    return 1      # modified VG (Vogel-Cislerova)
+    return 1
 
 
 def FK(mat: SoilMaterial, h: float) -> float:

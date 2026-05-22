@@ -73,15 +73,36 @@ def build_material_tables(materials: list[SoilMaterial],
             ConTab[i, M] = _FK(iModel, float(hTab[i]), Par)
             CapTab[i, M] = _FC(iModel, float(hTab[i]), Par)
             TheTab[i, M] = _FQ(iModel, float(hTab[i]), Par)
+    # Fortran's FK/FC/FQ return REAL*4 (float32) and Fortran's ConTab/
+    # CapTab/TheTab are REAL*4 arrays, so each table entry is truncated
+    # to ~7 sig figs at table-build time. Python's float64 storage
+    # gives ~15 sig figs and the extra precision compounds through
+    # Picard iterations as a 0.01-1.1 hPa drift. Truncate-then-promote
+    # to mirror Fortran's storage precision exactly.
+    ConTab = ConTab.astype(np.float32).astype(np.float64)
+    CapTab = CapTab.astype(np.float32).astype(np.float64)
+    TheTab = TheTab.astype(np.float32).astype(np.float64)
+    # hTab also stored as REAL*4 in Fortran via `hTab(i)=-10**alh` where
+    # alh is double precision but assignment to real array truncates.
+    hTab = hTab.astype(np.float32).astype(np.float64)
     return hTab, ConTab, CapTab, TheTab, alh1, dlh
 
 
 def _table_lookup(h: float, tab_y: NDArray[np.float64],
                   hTab: NDArray[np.float64],
                   alh1: float, dlh: float) -> float:
-    """Linear interpolation matching Fortran SetMat L455-457."""
-    # iT = floor((log10(-h) - alh1)/dlh)  [Fortran 1-based; here 0-based]
-    iT = int((np.log10(-h) - alh1) / dlh)
+    """Linear interpolation matching Fortran SetMat L455-457.
+
+    To bit-match Fortran's behaviour, the log10 and division here are
+    performed in float32 (Fortran's REAL*4 default for alh1/dlh),
+    so the integer index `iT` rounds identically to Fortran near
+    integer boundaries.
+    """
+    # Match Fortran's alh1, dlh, log10 precision (all REAL*4):
+    log_neg_h = float(np.float32(np.log10(-h)))
+    alh1_32 = float(np.float32(alh1))
+    dlh_32  = float(np.float32(dlh))
+    iT = int(np.float32((log_neg_h - alh1_32) / dlh_32))
     if iT < 0:
         iT = 0
     elif iT >= hTab.shape[0] - 1:
@@ -152,6 +173,11 @@ def set_mat(mesh: Mesh, materials: list[SoilMaterial],
             Ti = _FQ(iModel, hi2, Par)
         Cap[i]   = Ci * nodes.Dxz[i] / nodes.Axz[i]
         Theta[i] = thR[M] + (Ti - thR[M]) * nodes.Dxz[i]
+    # Fortran stores Con/Cap/Theta as REAL*4 (single-precision arrays). Truncate
+    # to float32 precision so downstream matrix assembly sees the same values.
+    Con   = Con.astype(np.float32).astype(np.float64)
+    Cap   = Cap.astype(np.float32).astype(np.float64)
+    Theta = Theta.astype(np.float32).astype(np.float64)
     return Con, Cap, Theta
 
 
@@ -669,6 +695,8 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
                      use_lscheme: bool = False,
                      lscheme_L: float = 0.0,
                      use_banded: bool = False,
+                     debug_file: Optional[object] = None,
+                     debug_TLevel: int = 0,
                      ) -> tuple[float, float, int, bool,
                                 NDArray[np.float64], NDArray[np.float64],
                                 NDArray[np.float64], NDArray[np.float64]]:
@@ -822,10 +850,28 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
                 h_next = sol
                 np.clip(h_next, -1e10, 1e10, out=h_next)
 
+            # Fortran does `hNew(i)=sngl(B(i))` (truncate to REAL*4) after
+            # each linear solve. To bit-match its iterate trajectory, we
+            # also truncate the iterate through float32 here.
+            h_next = h_next.astype(np.float32).astype(np.float64)
             nodes.hTemp[:] = h_prev      # previous iterate (for convergence test)
             nodes.hNew[:]  = h_next
             Iter += 1
             time.ItCum += 1
+
+            # DEBUG: per-iter state dump (matches Fortran's IT/CV lines)
+            if debug_file is not None:
+                t_dbg = tOld + dt_current
+                # IT line: TLevel, Iter, t, dt, h1, h33, h65, Q1, Q65, K1, K65
+                debug_file.write(
+                    f"IT {debug_TLevel:5d} {Iter:3d} {t_dbg:10.4f} "
+                    f"{dt_current:12.5E} "
+                    f"{nodes.hNew[0]:15.8E} {nodes.hNew[32]:15.8E} "
+                    f"{nodes.hNew[64]:15.8E} "
+                    f"{nodes.Q[0]:15.8E} {nodes.Q[64]:15.8E} "
+                    f"{int(nodes.Kode[0]):3d} {int(nodes.Kode[64]):3d}\n"
+                )
+
             if Explic:
                 break
 
@@ -835,6 +881,9 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
             # iterate, not the convergence signal.
             h_test_new = sol if anderson is not None else nodes.hNew
             ItCrit = True
+            EpsThM = 0.0
+            EpsHM = 0.0
+            ifail = 0
             for i in range(NumNP):
                 M = nodes.MatNum[i] - 1
                 EpsTh = 0.0
@@ -846,9 +895,19 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
                     EpsTh = abs(ThNew[i] - Th_predict)
                 else:
                     EpsH = abs(h_test_new[i] - h_prev[i])
+                if EpsTh > EpsThM: EpsThM = EpsTh
+                if EpsH > EpsHM: EpsHM = EpsH
                 if EpsTh > cfg.TolTh or EpsH > cfg.TolH:
+                    if ItCrit:
+                        ifail = i + 1  # 1-based to match Fortran
                     ItCrit = False
                     break
+
+            if debug_file is not None:
+                debug_file.write(
+                    f"CV {Iter:3d} {EpsThM:12.5E} {EpsHM:12.5E} "
+                    f"{ifail:4d} {'T' if ItCrit else 'F'}\n"
+                )
 
             if ItCrit:
                 # Converged
