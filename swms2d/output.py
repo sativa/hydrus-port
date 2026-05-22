@@ -90,6 +90,40 @@ class HOutWriter:
 # th.out — water content field
 # ---------------------------------------------------------------------------
 
+class ConcOutWriter:
+    """conc.out — solute concentration field. Matches Fortran cOut format
+    (OUTPUT2.FOR L502-521): no shared header, 10e11.3 numeric format."""
+
+    def __init__(self, path: Path, heading: str, units: list[str], kat: int):
+        self.f = open(path, "w")
+
+    def write_snapshot(self, t: float, mesh: Mesh,
+                       conc: NDArray[np.float64]) -> None:
+        f = self.f
+        f.write("\n\n")
+        f.write(f" Time  ***{t:12.4f} ***\n")
+        f.write("\n")
+        f.write("    n    x(n)   z(n)      Conc(n)   Conc(n+1)  ...\n")
+        f.write("\n")
+        IJ = mesh.IJ if mesh.IJ > 0 else 1
+        NumNP = mesh.NumNP
+        L1 = (IJ - 1) // 10 + 1
+        for n in range(0, NumNP, IJ):
+            for L in range(L1):
+                m = n + L * 10
+                k = m + 9
+                if L == L1 - 1:
+                    k = n + IJ - 1
+                row = f"{m+1:5d}{mesh.nodes.x[m]:8.1f}{mesh.nodes.y[m]:8.1f}"
+                for j in range(m, k + 1):
+                    if j < NumNP:
+                        row += f"{conc[j]:11.3e}".replace("e", "E")
+                f.write(row + "\n")
+
+    def close(self) -> None:
+        self.f.close()
+
+
 class ThOutWriter:
     def __init__(self, path: Path, heading: str, units: list[str], kat: int):
         self.f = open(path, "w")

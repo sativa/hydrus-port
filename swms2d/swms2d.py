@@ -27,8 +27,9 @@ from .dataclasses import (
 from .input import parse_example
 from .material import saturated_values
 from .watflow import solve_water_flow, set_mat
-from .output import HOutWriter, ThOutWriter
+from .output import HOutWriter, ThOutWriter, ConcOutWriter
 from .sink import set_snk, normalize_beta
+from .solute import solute_step
 
 
 class SWMS2DSimulation:
@@ -43,11 +44,7 @@ class SWMS2DSimulation:
         self.cfg, self.materials, self.time, self.mesh, self.extras = \
             parse_example(self.input_dir)
 
-        # Stage 2 supported feature set (lChem and DrainF still pending)
-        if self.cfg.lChem:
-            raise NotImplementedError(
-                "Stage 2 water flow runs; solute transport (lChem) pending."
-            )
+        # Phase 2d supported feature set (DrainF still pending)
         if self.cfg.DrainF:
             raise NotImplementedError(
                 "DrainF (subsurface drains) not implemented."
@@ -122,13 +119,30 @@ class SWMS2DSimulation:
         self.dtOld = self.time.dt
         self.TLevel = 1
 
-        # Output writers — opened lazily once we know we're in EXAMPLE.1
+        # Solute init
+        if self.cfg.lChem:
+            self.ChPar = self.extras["chem_ChPar"]
+            self.cBound = self.extras["chem_cBound"]
+            self.KodCB = self.extras["chem_KodCB"]
+            self.epsi = self.extras["chem_epsi"]
+            self.tPulse = self.extras["chem_tPulse"]
+            self.lUpW = self.extras["chem_lUpW"]
+            self.lArtD = self.extras["chem_lArtD"]
+            self.PeCr = self.extras["chem_PeCr"]
+            self.cPrec = 0.0
+            self.crt = 0.0
+            self.cht = 0.0
+
+        # Output writers
         heading = self.extras["heading"]
         units = self.extras["units"]
         self.h_writer  = HOutWriter (self.output_dir / "h.out",
                                      heading, units, self.cfg.KAT)
         self.th_writer = ThOutWriter(self.output_dir / "th.out",
                                      heading, units, self.cfg.KAT)
+        self.c_writer  = (ConcOutWriter(self.output_dir / "conc.out",
+                                        heading, units, self.cfg.KAT)
+                          if self.cfg.lChem else None)
 
     # ----------------------------------------------------------------
     def _set_atm(self) -> None:
@@ -218,7 +232,10 @@ class SWMS2DSimulation:
         if self.cfg.AtmInF:
             self._set_atm()
 
-        # Initial output at t=0
+        # Initial output at t=tInit — Fortran writes the GRID.IN initial
+        # h,th,conc before the time loop (SWMS_2D.FOR L137,144,145),
+        # even when lWat=False; the steady-state h is written later at
+        # TPrint[0] after WatFlow runs at TLevel=1.
         Con, Cap = self._initial_setmat()
         self.h_writer.write_snapshot (self.time.tInit, self.mesh, nodes.hNew.copy())
         self.th_writer.write_snapshot(self.time.tInit, self.mesh, self.ThOld.copy())
@@ -227,6 +244,11 @@ class SWMS2DSimulation:
         self.t = self.time.tInit + self.time.dt
         self.tOld = self.time.tInit
         self.dtOld = self.time.dt
+
+        # Initial concentration snapshot at t=tInit (SWMS_2D.FOR L137).
+        if self.c_writer:
+            self.c_writer.write_snapshot(self.time.tInit, self.mesh,
+                                         nodes.Conc.copy())
 
         while True:
             # Solve water flow for this step
@@ -257,34 +279,62 @@ class SWMS2DSimulation:
                     self.r2H, self.r2L,
                 )
 
-            dt_used, t_new, n_iter, converged, Con, Cap, ThNew, Q_intern = \
-                solve_water_flow(
-                    self.mesh, self.cfg, self.time, self.materials,
-                    self.thR, self.thSat, self.hSat, self.ConSat,
-                    self.ThNew, self.ThOld, self.ConO,
-                    self.NSeep, self.NSP, self.NP_seep,
-                    dt=self.time.dt, dtMin=self.time.dtMin,
-                    dtOld=self.dtOld, tOld=self.tOld,
-                    rTop=self.rTop, hCritA=self.hCritA, hCritS=self.hCritS,
-                    GWL0L=self.GWL0L, Aqh=self.Aqh, Bqh=self.Bqh,
-                    Sink=self.Sink_arr, P3=self.P3,
+            if self.cfg.lWat or self.TLevel == 1:
+                dt_used, t_new, n_iter, converged, Con, Cap, ThNew, Q_intern = \
+                    solve_water_flow(
+                        self.mesh, self.cfg, self.time, self.materials,
+                        self.thR, self.thSat, self.hSat, self.ConSat,
+                        self.ThNew, self.ThOld, self.ConO,
+                        self.NSeep, self.NSP, self.NP_seep,
+                        dt=self.time.dt, dtMin=self.time.dtMin,
+                        dtOld=self.dtOld, tOld=self.tOld,
+                        rTop=self.rTop, hCritA=self.hCritA, hCritS=self.hCritS,
+                        GWL0L=self.GWL0L, Aqh=self.Aqh, Bqh=self.Bqh,
+                        Sink=self.Sink_arr, P3=self.P3,
+                    )
+                self.t = t_new
+                self.time.dt = dt_used
+                ThNew_arr = ThNew
+            else:
+                # lWat=False, TLevel>1: water flow is steady — reuse last state
+                n_iter = 1
+                ThNew_arr = self.ThNew
+                self.t = self.tOld + self.time.dt
+
+            # Solute transport step
+            if self.cfg.lChem:
+                nodes.Conc[:] = solute_step(
+                    self.mesh, self.cfg, self.t, self.time.dt,
+                    nodes.hNew, nodes.hOld,
+                    Con, self.ConO, ThNew_arr, self.ThOld, self.thSat,
+                    nodes.Conc,
+                    self.Sink_arr if self.Sink_arr is not None
+                                  else np.zeros(self.mesh.NumNP, np.float64),
+                    self.ChPar, self.mesh.nodes.MatNum,
+                    self.cBound, self.KodCB,
+                    self.epsi, self.tPulse,
+                    cPrec=self.cPrec, crt=self.crt, cht=self.cht,
+                    lUpW=self.lUpW, lArtD=self.lArtD, PeCr=self.PeCr,
                 )
-            self.t = t_new
-            self.time.dt = dt_used
 
             if verbose and (self.TLevel % 20 == 1 or self.t >= self.time.tMax):
                 print(f"  T={self.t:12.4f}  dt={self.time.dt:.4g}  "
                       f"iter={n_iter}  conv={converged}  "
                       f"PLevel={self.PLevel}/{len(self.TPrint)}")
 
-            # Print-level output
+            # Print-level output. SWMS_2D.FOR L214-218 fires hOut/thOut only
+            # when lWat OR (.not.lWat .and. PLevel==1, i.e. once at first match).
             if (self.PLevel < len(self.TPrint)
                 and abs(self.TPrint[self.PLevel] - self.t)
                     < 0.001 * self.time.dt):
-                self.h_writer.write_snapshot(self.t, self.mesh,
-                                             nodes.hNew.copy())
-                self.th_writer.write_snapshot(self.t, self.mesh,
-                                              ThNew.copy())
+                if self.cfg.lWat or self.PLevel == 0:
+                    self.h_writer.write_snapshot(self.t, self.mesh,
+                                                 nodes.hNew.copy())
+                    self.th_writer.write_snapshot(self.t, self.mesh,
+                                                  ThNew_arr.copy())
+                if self.c_writer:
+                    self.c_writer.write_snapshot(self.t, self.mesh,
+                                                 nodes.Conc.copy())
                 self.PLevel += 1
 
             # Termination
@@ -305,6 +355,8 @@ class SWMS2DSimulation:
 
         self.h_writer.close()
         self.th_writer.close()
+        if self.c_writer:
+            self.c_writer.close()
         if verbose:
             print(f"\nDone. T={self.t} TLevel={self.TLevel} "
                   f"PLevel={self.PLevel}/{len(self.TPrint)}")

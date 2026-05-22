@@ -174,7 +174,7 @@ def parse_selector(path: Path) -> tuple[
     block_positions: dict[str, int] = {}
     for idx, ln in enumerate(lines):
         s = ln.lstrip()
-        for tag in ("BLOCK D", "BLOCK E", "BLOCK F"):
+        for tag in ("BLOCK D", "BLOCK E", "BLOCK F", "BLOCK G"):
             if s.startswith(f"*** {tag}"):
                 block_positions[tag] = idx
 
@@ -213,28 +213,41 @@ def parse_selector(path: Path) -> tuple[
         nseep = extras["NSeep"]
         extras["NSP"] = [int(x) for x in _tokens(e_data[1])][:nseep]
         np_seep = []
+        cursor = 2
         for k in range(nseep):
-            np_seep.append([int(x) for x in _tokens(e_data[2 + k])])
+            need = extras["NSP"][k]
+            nodes_k: list[int] = []
+            while len(nodes_k) < need and cursor < len(e_data):
+                nodes_k.extend(int(x) for x in _tokens(e_data[cursor]))
+                cursor += 1
+            np_seep.append(nodes_k[:need])
         extras["NP"] = np_seep
 
-    # ---- BLOCK F: solute transport ----
-    f_data = _block_data_lines("BLOCK F", None)
-    if cfg.lChem and f_data:
-        # Line 1: epsi, lUpW, lArtD, PeCr
-        toks = _tokens(f_data[0])
+    # ---- BLOCK F/G: solute transport (file uses BLOCK G in EX.3) ----
+    # Look for either BLOCK F or BLOCK G as the solute section.
+    chem_data: list[str] = []
+    for tag in ("BLOCK F", "BLOCK G"):
+        if tag in block_positions:
+            chem_data = _block_data_lines(tag, None)
+            break
+    if cfg.lChem and chem_data:
+        toks = _tokens(chem_data[0])
         extras["chem_epsi"]  = float(toks[0])
         extras["chem_lUpW"]  = _parse_bool(toks[1])
         extras["chem_lArtD"] = _parse_bool(toks[2])
         extras["chem_PeCr"]  = max(float(toks[3]), 0.01)
-        # Next NMat lines: 9 ChPar values per material
         chpar = np.zeros((9, NMat), np.float64)
         for M in range(NMat):
-            toks = _tokens(f_data[1 + M])
+            toks = _tokens(chem_data[1 + M])
             for j in range(9):
                 chpar[j, M] = float(toks[j])
         extras["chem_ChPar"] = chpar
-        # Remaining solute lines: see parse_chem_extras helper if needed.
-        extras["chem_remaining_lines"] = f_data[1 + NMat:]
+        # KodCB (NumBP values) may span multiple lines
+        kodcb: list[int] = []
+        remaining = chem_data[1 + NMat:]
+        # We don't know NumBP at this point — leave KodCB tokens as a raw list
+        # to be sliced by the driver once GRID.IN is parsed.
+        extras["chem_remaining_lines"] = remaining
 
     return cfg, materials, time, extras
 
@@ -478,6 +491,23 @@ def parse_example(in_dir: Path
     grd_path = next(p for p in in_dir.iterdir() if p.name.lower() == "grid.in")
     cfg, mats, time, extras = parse_selector(sel_path)
     mesh = parse_grid(grd_path)
+    # Now slice the chem_remaining_lines into KodCB/cBound/tPulse using NumBP
+    if cfg.lChem and "chem_remaining_lines" in extras:
+        toks_remaining: list[float | int] = []
+        for ln in extras["chem_remaining_lines"]:
+            toks_remaining.extend(_tokens(ln))
+        # KodCB first NumBP integers
+        NumBP = mesh.NumBP
+        kodcb = np.array([int(t) for t in toks_remaining[:NumBP]], np.int32)
+        rest = toks_remaining[NumBP:]
+        # Next 6 floats: cBound (Conc1..4, cSink, cWell)
+        cbound = np.array([float(t) for t in rest[:6]], np.float64)
+        rest = rest[6:]
+        # tPulse
+        tpulse = float(rest[0]) if rest else 1e30
+        extras["chem_KodCB"] = kodcb
+        extras["chem_cBound"] = cbound
+        extras["chem_tPulse"] = tpulse
     if cfg.AtmInF:
         atm_path = next(
             (p for p in in_dir.iterdir() if p.name.lower() == "atmosph.in"),
