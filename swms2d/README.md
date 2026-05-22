@@ -17,7 +17,9 @@ Direct 1:1 port of SWMS_2D v1.22 (Simunek 1996), aligned with the existing
 | `temper.py` | Heat transport (from-scratch 2D extension; verified vs analytical) | ✓ |
 | `hysteresis.py` | Scott (1983) drying/wetting scanning curves | ✓ (standalone) |
 | `drain.py` | Subsurface drain BC + Vimoke-Taylor K reduction | ✓ |
-| `output.py` | 11 of 13 SWMS_2D output files (h/th/conc + Balance, Boundary, Q, vx/vz, Run_Inf, Cum_Q, A_Level, ObsNod) | ✓ |
+| `output.py` | **13/13** SWMS_2D output files (+ Check.out + Solute.out) | ✓ |
+| `mesh_io.py` | gmsh reader + ParaView .pvd / .vtu writer (meshio-backed) | ✓ |
+| `skfem_watflow.py` | Stage 2 prototype on scikit-fem (1.76 % L2 vs Stage 1) | ✓ prototype |
 | `sink.py` | Feddes root water uptake + Beta normalisation | ✓ |
 | `swms2d.py` | Main simulation driver | ✓ |
 | `verify.py` | Compare against Fortran reference | ✓ (via compare_outputs.py) |
@@ -64,11 +66,37 @@ The Fortran SWMS_2D writes 13 ASCII files; Python now writes 11:
 | `Cum_Q.out` | cumulative boundary fluxes (if AtmInF) | ✓ |
 | `A_Level.out` | per-atm-record summary (if AtmInF) | ✓ |
 | `ObsNod.out` | observation-node h/θ/conc time series | ✓ |
-| `Check.out` | input echo | ⏳ deferred |
-| `Solute.out` | solute mass balance (if lChem) | ⏳ deferred |
+| `Check.out` | input echo | ✓ |
+| `Solute.out` | solute mass balance (if lChem) | ✓ |
 
-The deferred two are input echo and chemistry mass-balance — both
-auxiliary; the scientific outputs are all present.
+**All 13/13 SWMS_2D output files now implemented.**
+
+## Modern mesh IO and 3D-ready FE platform
+
+`swms2d/mesh_io.py` (optional, requires `meshio`):
+- `read_mesh(path)` — load gmsh / Abaqus / MEDIT / OpenFOAM /
+  NASTRAN / ANSYS meshes (~30 formats via meshio) into swms2d.Mesh.
+  Auto-detects boundary nodes from naked-edge analysis, sets Kode
+  and Width.
+- `write_vtk(mesh, path)` — bare-mesh VTU export.
+- `snapshot_to_vtk(mesh, fields, path)` — attach node-centred
+  scalar fields (h, theta, Kode, conc) for direct ParaView/VisIt
+  loading.
+- `timeseries_to_vtk_series(mesh, out_dir, snapshots)` — write a
+  `.pvd` collection + per-step `.vtu` files (animated time series).
+- Driver hook: `SWMS2DSimulation(..., write_vtk=True)` produces
+  `output_dir/vtk/snap.pvd` directly.
+
+`swms2d/skfem_watflow.py` (optional, requires `scikit-fem`):
+- Stage 2 prototype: Richards equation on scikit-fem's high-level
+  FE API. Reuses hydrus1d.material K/C/θ; assembles `K·∇u·∇v`
+  stiffness, `(C/dt)·u·v` lumped mass, gravity LinearForm.
+- Validated on EX.1 single-step: 1.76 % L2 vs Stage 1 watflow
+  (within 2 % target). The diff is from skfem's quadrature-based
+  assembly vs Fortran's analytic per-element formulae — not
+  bit-equal but mathematically equivalent.
+- Enables future 3D (`MeshTet`/`MeshHex`), higher-order elements
+  (P2/P3), AMG preconditioning, mixed FE, error estimators.
 
 ## Verification status (Phase 3)
 
