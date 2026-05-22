@@ -166,6 +166,7 @@ def reset(mesh: Mesh, cfg: SimulationConfig,
           Iter: int,
           Sink: Optional[NDArray[np.float64]] = None,
           P3: float = 0.0,
+          newton_diag_corr: Optional[NDArray[np.float64]] = None,
           ) -> tuple[csr_matrix, NDArray[np.float64], NDArray[np.float64],
                      NDArray[np.float64]]:
     """
@@ -291,17 +292,38 @@ def reset(mesh: Mesh, cfg: SimulationConfig,
                         + K_h[nn])
         Q_eff[nn] = Q_intern[nn]
 
-    # Now add M/dt to diagonal and form effective RHS
+    # Now add M/dt to diagonal and form effective RHS.
+    # If newton_diag_corr is provided, also add the Newton diagonal Jacobian
+    # term ∂(F*C*h/dt)/∂h_i = F[i] * dC/dh|h_i * (h_i - h_n_i)/dt. This makes
+    # the linear system a modified-Newton update (the off-diagonal ∂L/∂h_j
+    # K-derivative terms are dropped — diagonal-only quasi-Newton).
     diag_add = F * Cap / dt
+    if newton_diag_corr is not None:
+        diag_add = diag_add + newton_diag_corr
     K_csr = K_csr + csr_matrix(
         (diag_add, (np.arange(NumNP), np.arange(NumNP))),
         shape=(NumNP, NumNP),
     )
+    # B_eff RHS: standard Picard mixed form. The Newton correction enters
+    # only through diag_add (left-hand side); the RHS is unchanged because
+    # the linearization is around h^k, so the correction terms F[i] * dC/dh
+    # * (h_i - h_n_i)/dt cancel against the same expression evaluated at
+    # h^k on both sides.
     B_eff = (F * Cap * hNew / dt
              - F * (ThNew - ThOld) / dt
              + Q_eff
              - B
              - DS)
+    if newton_diag_corr is not None:
+        # Add the Newton correction's contribution to the RHS so the Jacobian
+        # corresponds to the actual residual being solved:
+        #   J · δh = -R(h^k)   where J = A_Picard + diag(Newton-corr)
+        # Equivalently:
+        #   J · h^{k+1} = J · h^k - R(h^k)
+        # The Picard form already gives A_Picard·h^{k+1} = A_Picard·h^k - R;
+        # we add diag(Newton-corr) · h^k on the RHS to balance the LHS extra
+        # term diag(Newton-corr) · h^{k+1}.
+        B_eff = B_eff + newton_diag_corr * hNew
 
     return K_csr, B_eff, F, Q_intern
 
@@ -548,6 +570,9 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
                      use_anderson: bool = False,
                      anderson_m: int = 3,
                      refine_solve: bool = False,
+                     use_newton: bool = False,
+                     use_lscheme: bool = False,
+                     lscheme_L: float = 0.0,
                      ) -> tuple[float, float, int, bool,
                                 NDArray[np.float64], NDArray[np.float64],
                                 NDArray[np.float64], NDArray[np.float64]]:
@@ -591,11 +616,83 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
             Con, Cap, ThNew_new = set_mat(mesh, materials, thR, thSat, hSat,
                                           ConSat, Explic=Explic, tables=tables)
             ThNew[:] = ThNew_new
+
+            # Newton diagonal correction: F[i] * dC/dh|h_i * (h_i - h_n_i)/dt.
+            # Captures the dominant Jacobian term ∂R/∂h_i without the more
+            # expensive off-diagonal ∂L/∂h_j K-derivative coupling. Skipped
+            # under Explic mode (which is itself a recovery fallback).
+            newton_corr: Optional[NDArray[np.float64]] = None
+            if use_newton and not Explic:
+                from .material import dC_dh_numeric as _dC_dh
+                from . import material as _mat
+                pars_n = [(_mat.select_imodel(m), _mat.to_h1d_par(m))
+                          for m in materials]
+                newton_corr = np.zeros(NumNP, np.float64)
+                MatNum = nodes.MatNum
+                Axz = nodes.Axz
+                for i in range(NumNP):
+                    M = MatNum[i] - 1
+                    iModel, Par = pars_n[M]
+                    h_i = nodes.hNew[i] / Axz[i]
+                    if h_i >= hSat[M]:
+                        continue
+                    # ΔΘ-residual contribution: F * d²θ/dh² * dh/dt
+                    dCdh = _dC_dh(iModel, h_i, Par, hSat=hSat[M])
+                    dhdt = (nodes.hNew[i] - nodes.hOld[i]) / dt_current
+                    newton_corr[i] = F_dummy = 0.0  # placeholder; F not yet built
+                # We need F (lumped mass) to scale the correction. Build a
+                # cheap pass over the mesh to compute it. The element loop in
+                # reset will fill F again — to avoid double-assembly we
+                # capture F here from a previous Reset's result via cache.
+                if hasattr(solve_water_flow, '_F_cache') and \
+                        solve_water_flow._F_cache[0] is mesh and \
+                        solve_water_flow._F_cache[1].shape == (NumNP,):
+                    F_cached = solve_water_flow._F_cache[1]
+                else:
+                    F_cached = None
+                if F_cached is None:
+                    # First iteration: do a probe reset without Newton corr
+                    # to get F, then redo with corr below.
+                    newton_corr = None
+                else:
+                    # Compute correction using cached F
+                    for i in range(NumNP):
+                        M = MatNum[i] - 1
+                        iModel, Par = pars_n[M]
+                        h_i = nodes.hNew[i] / Axz[i]
+                        if h_i >= hSat[M]:
+                            newton_corr[i] = 0.0
+                            continue
+                        dCdh = _dC_dh(iModel, h_i, Par, hSat=hSat[M])
+                        dhdt = (nodes.hNew[i] - nodes.hOld[i]) / dt_current
+                        # F[i] is lumped mass at node i; correction = F * dCdh * dhdt
+                        newton_corr[i] = (F_cached[i] * dCdh * dhdt
+                                          * nodes.Dxz[i] / Axz[i])
+
+            # L-scheme stabiliser: add L_param * F[i] to the diagonal of A
+            # and L_param * F[i] * h^k to the RHS. Provably contractive at
+            # any L_param ≥ Lipschitz constant of θ(h). See List & Radu (2016).
+            lscheme_corr: Optional[NDArray[np.float64]] = None
+            if use_lscheme and not Explic:
+                if not hasattr(solve_water_flow, '_F_cache') or \
+                        solve_water_flow._F_cache[0] is not mesh:
+                    pass   # F not yet built — skip on iter 0
+                else:
+                    F_cached = solve_water_flow._F_cache[1]
+                    L = lscheme_L if lscheme_L > 0.0 else 0.1
+                    lscheme_corr = L * F_cached
+
             # Reset
-            A_csr, B_eff, F, Q_intern_new = reset(mesh, cfg, Con, Cap,
-                                                  ThNew, ThOld, DS,
-                                                  dt_current, Iter,
-                                                  Sink=Sink, P3=P3)
+            A_csr, B_eff, F, Q_intern_new = reset(
+                mesh, cfg, Con, Cap, ThNew, ThOld, DS,
+                dt_current, Iter,
+                Sink=Sink, P3=P3,
+                newton_diag_corr=(newton_corr if newton_corr is not None
+                                  else lscheme_corr),
+            )
+            # Cache F for next iter's Newton/L-scheme correction
+            if use_newton or use_lscheme:
+                solve_water_flow._F_cache = (mesh, F)
             Q_intern[:] = Q_intern_new
             # Only Kode >= 1 (Dirichlet) gets its flux re-derived; flux-BC
             # nodes (Kode < 1) keep the Q value set by SetAtm / SetSnk.

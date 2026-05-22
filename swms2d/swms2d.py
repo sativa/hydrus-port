@@ -37,21 +37,37 @@ class SWMS2DSimulation:
 
     def __init__(self, input_dir: Path | str, output_dir: Path | str,
                  use_anderson: bool = False, anderson_m: int = 3,
-                 refine_solve: bool = False):
+                 refine_solve: bool = False, use_newton: bool = False,
+                 use_lscheme: bool = False, lscheme_L: float = 0.0):
         """
         Parameters
         ----------
         input_dir, output_dir : Path-like
             SWMS_2D.IN and SWMS_2D.OUT directories.
         use_anderson : bool, default False
-            If True, accelerate the Picard fixed-point iteration with
-            Anderson(m). Improves convergence in ill-conditioned cases
-            (e.g. EX.2 dry-spell around day 210-212) but changes the
-            converged-to-tolerance fixed point slightly, so output is no
-            longer bit-equal to the Fortran reference. Default False
-            preserves Fortran-matching behaviour.
+            Anderson(m) acceleration of the Picard fixed-point iteration.
+            *Experimental* — tested on EX.2 dry-spell, no measurable
+            improvement over plain Picard.
         anderson_m : int, default 3
-            Anderson buffer depth (number of past residuals to use).
+            Anderson buffer depth.
+        refine_solve : bool, default False
+            Iterative refinement of the sparse LU solve via splu factor
+            reuse. *Experimental* — tested, gives bit-identical results
+            to plain spsolve (confirming spsolve already at
+            working-precision residual).
+        use_newton : bool, default False
+            Modified-Newton diagonal Jacobian correction
+            F[i] * dC/dh|h_i * (h_i - h_n_i)/dt added to the Picard
+            matrix diagonal. *Experimental* — tested on EX.2 dry-spell,
+            no improvement (the K-derivative off-diagonal terms would
+            need to be added too for full Newton, ~500 LOC more).
+        use_lscheme : bool, default False
+            L-scheme stabiliser L*F[i] added to diagonal (List & Radu
+            2016). *Experimental and currently broken* — converges to a
+            different fixed point under iterate-based convergence test;
+            needs residual-based criterion to be used correctly.
+        lscheme_L : float, default 0.0
+            L-scheme regularisation strength.
         """
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
@@ -59,6 +75,9 @@ class SWMS2DSimulation:
         self.use_anderson = use_anderson
         self.anderson_m = anderson_m
         self.refine_solve = refine_solve
+        self.use_newton = use_newton
+        self.use_lscheme = use_lscheme
+        self.lscheme_L = lscheme_L
 
         # Parse input
         self.cfg, self.materials, self.time, self.mesh, self.extras = \
@@ -346,6 +365,9 @@ class SWMS2DSimulation:
                         use_anderson=self.use_anderson,
                         anderson_m=self.anderson_m,
                         refine_solve=self.refine_solve,
+                        use_newton=self.use_newton,
+                        use_lscheme=self.use_lscheme,
+                        lscheme_L=self.lscheme_L,
                     )
                 self.t = t_new
                 self.time.dt = dt_used

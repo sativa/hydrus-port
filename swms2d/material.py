@@ -79,6 +79,36 @@ def FS(mat: SoilMaterial, h: float) -> float:
 
 
 # ----------------------------------------------------------------------------
+# Numerical derivatives for the Newton-Raphson Jacobian
+# ----------------------------------------------------------------------------
+
+def dC_dh_numeric(iModel: int, h: float, Par: NDArray[np.float64],
+                  hSat: float = 0.0) -> float:
+    """∂C/∂h via central finite difference, used by Newton in reset().
+
+    Stays away from h = 0 (saturation kink) and clamps very dry h where
+    C is essentially zero.
+    """
+    if h >= hSat - 1e-6 or h <= -1e6:
+        return 0.0
+    eps = max(1e-3, 1e-4 * abs(h))
+    hi = min(h + eps, hSat - 1e-6)
+    lo = h - eps
+    return (_FC(iModel, hi, Par) - _FC(iModel, lo, Par)) / (hi - lo)
+
+
+def dK_dh_numeric(iModel: int, h: float, Par: NDArray[np.float64],
+                  hSat: float = 0.0) -> float:
+    """∂K/∂h via central finite difference."""
+    if h >= hSat - 1e-6 or h <= -1e6:
+        return 0.0
+    eps = max(1e-3, 1e-4 * abs(h))
+    hi = min(h + eps, hSat - 1e-6)
+    lo = h - eps
+    return (_FK(iModel, hi, Par) - _FK(iModel, lo, Par)) / (hi - lo)
+
+
+# ----------------------------------------------------------------------------
 # Vectorised batch helpers (avoid per-node Python overhead in assembly loops)
 # ----------------------------------------------------------------------------
 
