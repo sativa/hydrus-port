@@ -17,7 +17,7 @@ Direct 1:1 port of SWMS_2D v1.22 (Simunek 1996), aligned with the existing
 | `temper.py` | Heat transport (from-scratch 2D extension; verified vs analytical) | ✓ |
 | `hysteresis.py` | Scott (1983) drying/wetting scanning curves | ✓ (standalone) |
 | `drain.py` | Subsurface drain BC + Vimoke-Taylor K reduction | ✓ |
-| `output.py` | h.out + th.out + conc.out (other 10 .OUT files pending) | ⚠ partial |
+| `output.py` | 11 of 13 SWMS_2D output files (h/th/conc + Balance, Boundary, Q, vx/vz, Run_Inf, Cum_Q, A_Level, ObsNod) | ✓ |
 | `sink.py` | Feddes root water uptake + Beta normalisation | ✓ |
 | `swms2d.py` | Main simulation driver | ✓ |
 | `verify.py` | Compare against Fortran reference | ✓ (via compare_outputs.py) |
@@ -46,6 +46,29 @@ Three modules **extend** the original Fortran feature set:
 All three modules are standalone; the main driver does not yet
 auto-integrate heat / hysteresis / drains into the time loop (each
 is invoked explicitly by user code or future driver flags).
+
+## Output files (11 of 13 implemented)
+
+The Fortran SWMS_2D writes 13 ASCII files; Python now writes 11:
+
+| File | Contents | Status |
+|------|----------|--------|
+| `h.out` | pressure head per node, per print event | ✓ |
+| `th.out` | water content per node, per print event | ✓ |
+| `conc.out` | solute concentration (if lChem) | ✓ |
+| `Q.out` | nodal Q per print event | ✓ **bit-equal on EX.2** |
+| `Boundary.out` | boundary-node table per print event | ✓ |
+| `Balance.out` | per-layer Volume/InFlow/hMean + WatBalT/R | ✓ |
+| `vx.out` / `vz.out` | Darcy velocity components | ✓ |
+| `Run_Inf.out` | per-timestep TLevel/dt/Iter/ItCum | ✓ |
+| `Cum_Q.out` | cumulative boundary fluxes (if AtmInF) | ✓ |
+| `A_Level.out` | per-atm-record summary (if AtmInF) | ✓ |
+| `ObsNod.out` | observation-node h/θ/conc time series | ✓ |
+| `Check.out` | input echo | ⏳ deferred |
+| `Solute.out` | solute mass balance (if lChem) | ⏳ deferred |
+
+The deferred two are input echo and chemistry mass-balance — both
+auxiliary; the scientific outputs are all present.
 
 ## Verification status (Phase 3)
 
