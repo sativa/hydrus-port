@@ -537,6 +537,122 @@ class ALevelWriter:
 # Boundary.out — per-print-event boundary node table
 # ---------------------------------------------------------------------------
 
+class SolInfWriter:
+    """Solute.out — per-step solute mass-balance summary (SolInf,
+    OUTPUT2.FOR L350-389). Columns: t, CumCh0, CumCh1, CumChR, ChemS[1..NumKD]
+    (cumulative per-Kode), SMean[1..NumKD] (instantaneous per-Kode)."""
+
+    def __init__(self, path: Path, NumKD: int = 7):
+        self.f = open(path, "w")
+        self.NumKD = NumKD
+        self.f.write(
+            " All solute fluxes (SMean) and cumulative solute fluxes (ChemS) "
+            "are positive out of the region\n\n"
+            "     Time     CumCh0     CumCh1     CumChR   "
+            + "-" * 20 + "  ChemS(i),i=1,NumKD  " + "-" * 22 + "  "
+            + "-" * 21 + "  SMean(j),j=1,NumKD " + "-" * 22 + "\n"
+            "      [T]    [VM/L3]    [VM/L3]    [VM/L3]"
+            + " " * 31 + "[VM/L3]" + " " * 59 + "[VM/T/L3]\n\n"
+        )
+        self.ChemS = np.zeros(NumKD + 1, np.float64)
+        self.cCumT = 0.0
+        self.cCumA = 0.0
+
+    def write_line(self, t: float, dt: float,
+                   Kode: NDArray[np.int32], Qc: NDArray[np.float64],
+                   CumCh0: float, CumCh1: float, CumChR: float) -> None:
+        # SMean[j] = -sum(Qc[i] for nodes with |Kode[i]|=j)
+        SMean = np.zeros(self.NumKD + 1, np.float64)
+        for i in range(Kode.shape[0]):
+            j = abs(int(Kode[i]))
+            if j != 0 and j <= self.NumKD:
+                SMean[j] -= float(Qc[i])
+        # Update cumulative ChemS
+        for j in range(1, self.NumKD + 1):
+            self.ChemS[j] += SMean[j] * dt
+        # Write row
+        row = f"{t:10.2f}"
+        for v in [CumCh0, CumCh1, CumChR]:
+            row += _fortran_e(float(v), 11, 3)
+        for j in range(1, self.NumKD + 1):
+            row += _fortran_e(float(self.ChemS[j]), 11, 3)
+        for j in range(1, self.NumKD + 1):
+            row += _fortran_e(float(SMean[j]), 11, 3)
+        self.f.write(row + "\n")
+
+    def close(self) -> None:
+        self.f.close()
+
+
+class CheckOutWriter:
+    """Check.out — input-echo for the user to verify the parsed problem.
+
+    Fortran's BasInf / MatIn / TmIn / SinkIn / SeepIn / ChemIn all write
+    to unit 50 throughout the parse. Our parser is a single pass so we
+    emit a one-shot dump at simulation startup capturing the same content
+    blocks (cfg, materials, time, BCs).
+    """
+
+    def __init__(self, path: Path, heading: str, units: list[str], kat: int,
+                 atm_inf: bool = False):
+        self.f = open(path, "w")
+        _write_common_header(self.f, heading, units, kat, atm_inf)
+
+    def write(self, *,
+              cfg, time, materials,
+              NMat: int, NLay: int, NumNP: int, NumEl: int, NumBP: int,
+              IJ: int, NObs: int,
+              extras: dict) -> None:
+        f = self.f
+        f.write("\n Basic Information\n " + "=" * 28 + "\n")
+        f.write(f" KAT             = {cfg.KAT}\n")
+        f.write(f" MaxIt           = {cfg.MaxIt}\n")
+        f.write(f" TolTh           = {cfg.TolTh:.4g}\n")
+        f.write(f" TolH            = {cfg.TolH:.4g}\n")
+        f.write(f" lWat / lChem    = {cfg.lWat} / {cfg.lChem}\n")
+        f.write(f" AtmInF / SeepF  = {cfg.AtmInF} / {cfg.SeepF}\n")
+        f.write(f" FreeD / DrainF  = {cfg.FreeD} / {cfg.DrainF}\n")
+        f.write(f" SinkF / qGWLF   = {cfg.SinkF} / {cfg.qGWLF}\n")
+        f.write("\n Material Information\n " + "=" * 28 + "\n")
+        f.write(f" NMat = {NMat}  NLay = {NLay}\n")
+        f.write("    thr      ths      tha      thm      Alfa       n        "
+                "Ks         Kk      thk\n")
+        for m in materials:
+            f.write(f"{m.thr:9.4f}{m.ths:9.4f}{m.tha:9.4f}{m.thm:9.4f}"
+                    f"{m.alpha:11.4g}{m.n:9.4f}{m.Ks:11.4g}{m.Kk:11.4g}"
+                    f"{m.thk:9.4f}\n")
+        f.write("\n Time Information\n " + "=" * 28 + "\n")
+        f.write(f" dt={time.dt:.4g}  dtMin={time.dtMin:.4g}  "
+                f"dtMaxW={time.dtMaxW:.4g}\n")
+        f.write(f" dMul={time.dMul:.4g}  dMul2={time.dMul2:.4g}\n")
+        tprint = extras.get("TPrint")
+        if tprint is not None:
+            f.write(f" TPrint = {tprint.tolist()}\n")
+        f.write(f"\n Mesh\n " + "=" * 28 + "\n")
+        f.write(f" NumNP={NumNP}  NumEl={NumEl}  NumBP={NumBP}  "
+                f"IJ={IJ}  NObs={NObs}\n")
+        if cfg.SeepF:
+            f.write(f"\n Seepage faces: NSeep={extras.get('NSeep')}"
+                    f"  NSP={extras.get('NSP')}\n")
+        if cfg.AtmInF:
+            atm = extras.get("atm", {})
+            f.write(f"\n Atmosphere: SinkF={atm.get('SinkF')} "
+                    f"qGWLF={atm.get('qGWLF')} GWL0L={atm.get('GWL0L'):.4g}"
+                    f" tInit={atm.get('tInit'):.4g} MaxAL={atm.get('MaxAL')}\n")
+        if cfg.lChem:
+            f.write(f"\n Solute: epsi={extras.get('chem_epsi'):.4g}"
+                    f" lUpW={extras.get('chem_lUpW')}"
+                    f" lArtD={extras.get('chem_lArtD')}"
+                    f" PeCr={extras.get('chem_PeCr'):.4g}"
+                    f" tPulse={extras.get('chem_tPulse'):.4g}\n")
+        if cfg.DrainF:
+            f.write(f"\n Drainage: NDr={extras.get('drain_NDr')}"
+                    f" DrCorr={extras.get('drain_DrCorr'):.4g}\n")
+
+    def close(self) -> None:
+        self.f.close()
+
+
 class BouOutWriter:
     """Boundary.out — boundary-node table per print time (BouOut, L312-348).
     Columns: n, x, z, Code, Q, h, theta, conc."""

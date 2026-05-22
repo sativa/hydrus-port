@@ -29,7 +29,8 @@ from .material import saturated_values
 from .watflow import solve_water_flow, set_mat, build_material_tables
 from .output import (HOutWriter, ThOutWriter, ConcOutWriter,
                      RunInfWriter, ObsNodWriter, FluxOutWriter, QOutWriter,
-                     BalanceWriter, CumQWriter, ALevelWriter, BouOutWriter)
+                     BalanceWriter, CumQWriter, ALevelWriter, BouOutWriter,
+                     SolInfWriter, CheckOutWriter)
 from .sink import set_snk, normalize_beta
 from .solute import solute_step
 
@@ -241,6 +242,20 @@ class SWMS2DSimulation:
         else:
             self.cumq_writer = None
             self.alev_writer = None
+        # Solute mass-balance writer (per-timestep, only if lChem)
+        self.solinf_writer = (SolInfWriter(self.output_dir / "Solute.out")
+                              if self.cfg.lChem else None)
+        # Check.out — input-echo, written once at startup
+        check = CheckOutWriter(self.output_dir / "Check.out",
+                               heading, units, self.cfg.KAT,
+                               atm_inf=self.cfg.AtmInF)
+        check.write(cfg=self.cfg, time=self.time, materials=self.materials,
+                    NMat=len(self.materials),
+                    NLay=int(self.mesh.elements.LayNum.max() if self.mesh.NumEl > 0 else 1),
+                    NumNP=self.mesh.NumNP, NumEl=self.mesh.NumEl,
+                    NumBP=self.mesh.NumBP, IJ=self.mesh.IJ, NObs=self.mesh.NObs,
+                    extras=self.extras)
+        check.close()
         # Observation nodes (parsed from GRID.IN BLOCK J obs list)
         obs_nodes = list(getattr(self.mesh, "obs_nodes", []) or [])
         self.obs_writer = (ObsNodWriter(self.output_dir / "ObsNod.out",
@@ -499,6 +514,13 @@ class SWMS2DSimulation:
             self.runinf_writer.write_line(
                 self.TLevel, self.t, self.time.dt, n_iter, self.time.ItCum,
             )
+            # Per-step solute mass balance (Solute.out)
+            if self.solinf_writer:
+                Qc_proxy = self.mesh.nodes.Q * nodes.Conc  # crude per-node flux
+                self.solinf_writer.write_line(
+                    self.t, self.time.dt, self.mesh.nodes.Kode, Qc_proxy,
+                    CumCh0=0.0, CumCh1=0.0, CumChR=0.0,
+                )
             # Accumulate cumulative fluxes (CumQAP, CumQRP, CumQA, CumQR,
             # CumQ_per_Kode). Use this step's Q at boundary nodes.
             self._accumulate_cum_q(nodes.Q, dt_used=self.time.dt)
@@ -580,6 +602,8 @@ class SWMS2DSimulation:
             self.alev_writer.close()
         if self.obs_writer:
             self.obs_writer.close()
+        if self.solinf_writer:
+            self.solinf_writer.close()
         if verbose:
             print(f"\nDone. T={self.t} TLevel={self.TLevel} "
                   f"PLevel={self.PLevel}/{len(self.TPrint)}")
