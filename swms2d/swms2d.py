@@ -42,7 +42,7 @@ class SWMS2DSimulation:
                  use_anderson: bool = False, anderson_m: int = 3,
                  refine_solve: bool = False, use_newton: bool = False,
                  use_lscheme: bool = False, lscheme_L: float = 0.0,
-                 use_banded: bool = False):
+                 use_banded: bool = False, write_vtk: bool = False):
         """
         Parameters
         ----------
@@ -83,6 +83,9 @@ class SWMS2DSimulation:
         self.use_lscheme = use_lscheme
         self.lscheme_L = lscheme_L
         self.use_banded = use_banded
+        self.write_vtk = write_vtk
+        # Accumulate VTK snapshots in memory; write the .pvd series at close
+        self._vtk_snaps: list[tuple[float, dict]] = []
 
         # Parse input
         self.cfg, self.materials, self.time, self.mesh, self.extras = \
@@ -569,6 +572,16 @@ class SWMS2DSimulation:
                     self.obs_writer.write_line(
                         self.t, nodes.hNew, ThNew_arr, nodes.Conc,
                     )
+                # Stash a VTK snapshot if requested
+                if self.write_vtk:
+                    self._vtk_snaps.append((float(self.t), {
+                        'h':     nodes.hNew.copy(),
+                        'theta': ThNew_arr.copy(),
+                        'Kode':  nodes.Kode.astype(np.float64).copy(),
+                        'Q':     nodes.Q.copy(),
+                        **({'conc': nodes.Conc.copy()}
+                           if self.cfg.lChem else {}),
+                    }))
                 self.PLevel += 1
 
             # Termination
@@ -604,6 +617,18 @@ class SWMS2DSimulation:
             self.obs_writer.close()
         if self.solinf_writer:
             self.solinf_writer.close()
+        # Emit ParaView .pvd series if VTK was requested
+        if self.write_vtk and self._vtk_snaps:
+            try:
+                from .mesh_io import timeseries_to_vtk_series
+                pvd = timeseries_to_vtk_series(
+                    self.mesh, self.output_dir / "vtk", self._vtk_snaps,
+                )
+                if verbose:
+                    print(f"  VTK series → {pvd}")
+            except ImportError as e:
+                if verbose:
+                    print(f"  VTK skipped: {e}")
         if verbose:
             print(f"\nDone. T={self.t} TLevel={self.TLevel} "
                   f"PLevel={self.PLevel}/{len(self.TPrint)}")
