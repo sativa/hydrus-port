@@ -473,6 +473,7 @@ def parse_grid(path: Path) -> Mesh:
     KXB    = np.zeros(NumBP, np.int32)
     Width  = np.zeros(NumBP, np.float64)
     rLen   = 0.0
+    obs_nodes: list[int] = []
     section = None
     nums_buf: list[float] = []
     def flush_into():
@@ -505,7 +506,9 @@ def parse_grid(path: Path) -> Mesh:
             rLen = nums[0]
             section = "obs"   # consume only one value
         elif section == "obs":
-            pass
+            # Collect observation node IDs (1-based) so the driver can
+            # open ObsNod.out. Don't pollute nums_buf.
+            obs_nodes.extend(int(v) for v in nums)
         else:
             nums_buf.extend(nums)
     flush_into()
@@ -515,6 +518,9 @@ def parse_grid(path: Path) -> Mesh:
         KXB=KXB, Width=Width, rLen=rLen,
         NumNP=NumNP, NumEl=NumEl, NumBP=NumBP, IJ=IJ, NObs=NObs,
     )
+    # Attach observation node ids (1-based) as a dynamic attribute so the
+    # driver can find them without changing the Mesh dataclass schema.
+    mesh.obs_nodes = obs_nodes[:NObs] if NObs > 0 else obs_nodes
     build_listne(mesh)
     return mesh
 

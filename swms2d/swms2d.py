@@ -27,7 +27,9 @@ from .dataclasses import (
 from .input import parse_example
 from .material import saturated_values
 from .watflow import solve_water_flow, set_mat, build_material_tables
-from .output import HOutWriter, ThOutWriter, ConcOutWriter
+from .output import (HOutWriter, ThOutWriter, ConcOutWriter,
+                     RunInfWriter, ObsNodWriter, FluxOutWriter, QOutWriter,
+                     BalanceWriter, CumQWriter, ALevelWriter, BouOutWriter)
 from .sink import set_snk, normalize_beta
 from .solute import solute_step
 
@@ -210,6 +212,75 @@ class SWMS2DSimulation:
         self.c_writer  = (ConcOutWriter(self.output_dir / "conc.out",
                                         heading, units, self.cfg.KAT)
                           if self.cfg.lChem else None)
+        # Auxiliary output writers (always on; Fortran always emits these)
+        self.runinf_writer = RunInfWriter(
+            self.output_dir / "Run_Inf.out",
+            lChem=self.cfg.lChem, lWat=self.cfg.lWat,
+        )
+        self.flux_writer = FluxOutWriter(
+            self.output_dir / "vx.out", self.output_dir / "vz.out",
+        )
+        self.q_writer = QOutWriter(self.output_dir / "Q.out")
+        self.balance_writer = BalanceWriter(
+            self.output_dir / "Balance.out",
+            heading, units, self.cfg.KAT, atm_inf=self.cfg.AtmInF,
+        )
+        self.bou_writer = BouOutWriter(self.output_dir / "Boundary.out")
+        # Atmospheric- and cumulative-flux writers only meaningful for AtmInF
+        if self.cfg.AtmInF:
+            self.cumq_writer = CumQWriter(
+                self.output_dir / "Cum_Q.out", lWat=self.cfg.lWat,
+                heading=heading, units=units, kat=self.cfg.KAT,
+                atm_inf=True,
+            )
+            self.alev_writer = ALevelWriter(
+                self.output_dir / "A_Level.out",
+                heading=heading, units=units, kat=self.cfg.KAT,
+                atm_inf=True,
+            )
+        else:
+            self.cumq_writer = None
+            self.alev_writer = None
+        # Observation nodes (parsed from GRID.IN BLOCK J obs list)
+        obs_nodes = list(getattr(self.mesh, "obs_nodes", []) or [])
+        self.obs_writer = (ObsNodWriter(self.output_dir / "ObsNod.out",
+                                        obs_nodes)
+                           if obs_nodes else None)
+        # Running cumulative-flux state (for Cum_Q.out and A_Level.out)
+        self._CumQrT = 0.0   # cumulative atmospheric potential (rTop * dt)
+        self._CumQrR = 0.0   # cumulative root potential        (rRoot * dt)
+        self._CumQvR = 0.0   # cumulative root actual
+        self._CumQ = np.zeros(8, np.float64)   # CumQ[1..7] by Kode
+
+    # ----------------------------------------------------------------
+    # ----------------------------------------------------------------
+    def _accumulate_cum_q(self, Q: NDArray[np.float64],
+                          dt_used: float) -> None:
+        """Update per-Kode cumulative-flux totals + CumQrT/CumQrR/CumQvR.
+
+        Convention (matches Fortran TLInf): fluxes are positive OUT of
+        the region. Q[i] at boundary nodes is the prescribed/computed
+        flux at that node; we sum into CumQ[|Kode|] across all nodes.
+        """
+        Kode = self.mesh.nodes.Kode
+        for i in range(self.mesh.NumNP):
+            j = abs(int(Kode[i]))
+            if j == 0:
+                continue
+            if j >= 1 and j <= 7:
+                self._CumQ[j] += -float(Q[i]) * dt_used
+        # Atmospheric potential * SWidth(4) approximation
+        if self.cfg.AtmInF:
+            SWidth4 = float(self.mesh.Width.sum())  # approximation
+            self._CumQrT += self.rTop  * dt_used * SWidth4
+            self._CumQrR += self.rRoot * dt_used * self.mesh.rLen
+            # Actual root extraction = SinkF total
+            if self.cfg.SinkF and self.Sink_arr is not None:
+                self._CumQvR += float(self.Sink_arr.sum()) * dt_used
+
+    def _wCumT(self) -> float:
+        """Cumulative net out-flux total used by Balance.out WatBalT."""
+        return float(self._CumQ[1:].sum())
 
     # ----------------------------------------------------------------
     def _set_atm(self) -> None:
@@ -324,6 +395,16 @@ class SWMS2DSimulation:
         Con, Cap = self._initial_setmat()
         self.h_writer.write_snapshot (self.time.tInit, self.mesh, nodes.hNew.copy())
         self.th_writer.write_snapshot(self.time.tInit, self.mesh, self.ThOld.copy())
+        # Initial Balance.out snapshot at t=tInit (PLevel=0 — stashes wVolI)
+        self.balance_writer.write_snapshot(
+            self.time.tInit, self.mesh, nodes.hNew, self.ThOld, self.ThOld,
+            self.time.dt, 0, self.cfg.lWat, wCumA=0.0, wCumT=0.0,
+        )
+        # Initial obs-node line so the ObsNod.out trajectory starts at t=tInit
+        if self.obs_writer:
+            self.obs_writer.write_line(
+                self.time.tInit, nodes.hNew, self.ThOld, nodes.Conc,
+            )
 
         # First time step from dtInit
         self.t = self.time.tInit + self.time.dt
@@ -414,6 +495,20 @@ class SWMS2DSimulation:
                     lUpW=self.lUpW, lArtD=self.lArtD, PeCr=self.PeCr,
                 )
 
+            # Per-step diagnostic output
+            self.runinf_writer.write_line(
+                self.TLevel, self.t, self.time.dt, n_iter, self.time.ItCum,
+            )
+            # Accumulate cumulative fluxes (CumQAP, CumQRP, CumQA, CumQR,
+            # CumQ_per_Kode). Use this step's Q at boundary nodes.
+            self._accumulate_cum_q(nodes.Q, dt_used=self.time.dt)
+            if self.cumq_writer:
+                self.cumq_writer.write_line(
+                    self.t, self._CumQrT, self._CumQrR,
+                    self._CumQ[4], self._CumQvR, self._CumQ[3],
+                    self._CumQ[1], self._CumQ[2],
+                )
+
             if verbose and (self.TLevel % 20 == 1 or self.t >= self.time.tMax):
                 print(f"  T={self.t:12.4f}  dt={self.time.dt:.4g}  "
                       f"iter={n_iter}  conv={converged}  "
@@ -432,6 +527,26 @@ class SWMS2DSimulation:
                 if self.c_writer:
                     self.c_writer.write_snapshot(self.t, self.mesh,
                                                  nodes.Conc.copy())
+                # Always write the auxiliary per-PLevel outputs
+                self.balance_writer.write_snapshot(
+                    self.t, self.mesh, nodes.hNew, self.ThOld, ThNew_arr,
+                    self.time.dt, self.PLevel, self.cfg.lWat,
+                    wCumA=0.0, wCumT=self._wCumT(),
+                )
+                self.q_writer.write_snapshot(self.t, self.mesh, nodes.Q)
+                self.bou_writer.write_snapshot(
+                    self.t, self.mesh, nodes.hNew, ThNew_arr, nodes.Q,
+                    Conc=nodes.Conc if self.cfg.lChem else None,
+                )
+                # Velocity field: reuse veloc() from solute module
+                from .solute import veloc as _veloc
+                Vx, Vz = _veloc(self.mesh, nodes.hNew, Con, self.cfg.KAT)
+                self.flux_writer.write_snapshot(self.t, self.mesh, Vx, Vz)
+                # Obs nodes — once per print event
+                if self.obs_writer:
+                    self.obs_writer.write_line(
+                        self.t, nodes.hNew, ThNew_arr, nodes.Conc,
+                    )
                 self.PLevel += 1
 
             # Termination
@@ -454,6 +569,17 @@ class SWMS2DSimulation:
         self.th_writer.close()
         if self.c_writer:
             self.c_writer.close()
+        self.runinf_writer.close()
+        self.flux_writer.close()
+        self.q_writer.close()
+        self.balance_writer.close()
+        self.bou_writer.close()
+        if self.cumq_writer:
+            self.cumq_writer.close()
+        if self.alev_writer:
+            self.alev_writer.close()
+        if self.obs_writer:
+            self.obs_writer.close()
         if verbose:
             print(f"\nDone. T={self.t} TLevel={self.TLevel} "
                   f"PLevel={self.PLevel}/{len(self.TPrint)}")
