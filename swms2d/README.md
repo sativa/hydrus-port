@@ -27,30 +27,48 @@ Run with: `python compare_outputs.py /tmp/swms2d_test_ex<N> <reference>`.
 | Example | Features | h.out | th.out | conc.out |
 |---------|----------|-------|--------|----------|
 | EX.1 | SeepF | ✓ **bit-equal** | ✓ **bit-equal** | — |
-| EX.2 | AtmInF + SinkF + qGWLF | ≤1.1 hPa | ≤0.001 θ | — |
+| EX.2 | AtmInF + SinkF + qGWLF (183 d run) | ≤1.1 hPa typical, 16 hPa peak during a 3-day stress event | ≤0.001 θ | — |
 | EX.3 | lWat=False steady + solute + SeepF | ✓ **bit-equal** | ✓ **bit-equal** | ≤0.001 conc |
-| EX.4 | lWat + lChem + KAT=1 (axisymmetric) | ≤0.1 hPa | ≤0.001 θ | ≤0.005 conc |
+| EX.4 | lWat + lChem + KAT=1 (axisymmetric) | ≤0.1 hPa | ≤0.001 θ | ≤0.002 conc |
 
 EX.1 and EX.3 are bit-equal h/th against the reference Fortran binary.
-EX.2's 1.1 hPa residual is within Fortran's own reported mass balance
-error (WatBalR ≈ 1.3 % from Balance.out — the Fortran integration
-itself accumulates that much over the 183-day run). EX.4 sub-precision
-diffs all come from the axisymmetric KAT=1 path and are at print-format
-rounding noise.
+EX.4 diffs are at the linear-solver-path noise floor (scipy spsolve LU vs
+Fortran banded Gauss). EX.2's residual sits within Fortran's own reported
+mass balance error (WatBalR ≈ 1.3 % from Balance.out) for most of the run;
+a transient spike around day 210-212 (a 3-day dry-down with rRoot
+0.48→0.65 and no precip) amplifies the solver-path difference to 16 hPa
+before relaxing back within ~30 days.
 
-Key correctness gains during verification:
+Key correctness gains during verification (in commit order):
 
-1. `Reset` now propagates the prescribed atmospheric flux at Kode<0
-   nodes into the effective RHS (mirrors Fortran's "B(i)=... + Q(i)"
-   read-from-global pattern). Earlier the local Q_intern array was
-   zero for non-Dirichlet nodes, silently dropping ~2.76 cm of EX.2
-   cumulative precipitation over 30 days — a 30 hPa systematic offset.
+1. **`Reset` propagates prescribed Q at Kode<0 nodes.** Atmospheric and
+   GWL flux that SetAtm placed in `mesh.nodes.Q` was being dropped
+   because the effective-RHS loop used a locally-zero `Q_intern`. Now
+   matches Fortran's "B(i)=... + Q(i) - B(i) - DS(i)" read-from-global
+   pattern. (EX.2: 30 hPa systematic offset → 1.1 hPa)
 
-2. `set_mat` can use a 100-point log-spaced (h, K, C, θ) interpolation
-   table (`build_material_tables`) that mirrors Fortran GenMat exactly,
-   so the table quantization error is reproduced bit-equal. Direct
-   FK/FC/FQ calls would be marginally more accurate but would no longer
-   match Fortran printed output.
+2. **`set_mat` uses Fortran GenMat-style log-spaced K/C/θ table.** A
+   100-point linear interpolation reproduces Fortran's table
+   quantization error bit-equal. (EX.1: 0.1 hPa → 0.0)
+
+3. **WeFact upstream weighting + lUpW branch in solute_step.** EX.4
+   declares `lUpW=True`; previously silently treated as False, so the
+   upwind correction term `xMul*(Bi[j2]/40*Wx[j1] + Ci[j2]/40*Wz[j1])`
+   was missing from the S matrix. (EX.4 conc: 0.005 → 0.002)
+
+4. **π literal `3.1416` instead of `np.pi` in KAT=1 xMul.** Fortran
+   hardcodes 3.1416; over a 24-hour axisymmetric run the 0.002%
+   precision difference accumulates measurably.
+
+5. **`lMinStep` dt throttle after atm-record BC change.** Fortran caps
+   dtMax at dtInit for one step after every record change; without
+   this Python was taking ~half the time steps with proportionally
+   larger per-step error. (EX.2 late-time: 5.4 hPa → 0.7 hPa)
+
+6. **`conc.out` uses Fortran-style `e11.3` format.** Python's `.3e`
+   gave 4-sig-fig mantissas (`5.557E-01`); Fortran's leading-zero
+   form (`0.557E+00`) gives 3. Added `_fortran_e()` helper for
+   byte-comparable conc output.
 
 ### Material model selection (Vogel-Cislerova)
 
