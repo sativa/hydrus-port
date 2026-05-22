@@ -26,15 +26,31 @@ Run with: `python compare_outputs.py /tmp/swms2d_test_ex<N> <reference>`.
 
 | Example | Features | h.out | th.out | conc.out |
 |---------|----------|-------|--------|----------|
-| EX.1 | SeepF | ≤0.1 hPa | ≤0.001 θ | — |
-| EX.2 | AtmInF + SinkF + qGWLF | ~30 hPa offset (residual bug) | ~0.03 θ | — |
-| EX.3 | lWat=False steady + solute + SeepF | bit-equal | bit-equal | ≤0.001 conc |
-| EX.4 | lWat + lChem + KAT=1 (axisymmetric) | ≤0.3 hPa | ≤0.001 θ | ≤0.005 conc |
+| EX.1 | SeepF | ✓ **bit-equal** | ✓ **bit-equal** | — |
+| EX.2 | AtmInF + SinkF + qGWLF | ≤1.1 hPa | ≤0.001 θ | — |
+| EX.3 | lWat=False steady + solute + SeepF | ✓ **bit-equal** | ✓ **bit-equal** | ≤0.001 conc |
+| EX.4 | lWat + lChem + KAT=1 (axisymmetric) | ≤0.1 hPa | ≤0.001 θ | ≤0.005 conc |
 
-EXAMPLES 1, 3, 4 are at numerical-rounding precision against the reference.
-EX.2's residual offset is documented inline; physics is qualitatively
-correct (gradient shape matches) but cumulative mass balance is off by a
-small additive amount.
+EX.1 and EX.3 are bit-equal h/th against the reference Fortran binary.
+EX.2's 1.1 hPa residual is within Fortran's own reported mass balance
+error (WatBalR ≈ 1.3 % from Balance.out — the Fortran integration
+itself accumulates that much over the 183-day run). EX.4 sub-precision
+diffs all come from the axisymmetric KAT=1 path and are at print-format
+rounding noise.
+
+Key correctness gains during verification:
+
+1. `Reset` now propagates the prescribed atmospheric flux at Kode<0
+   nodes into the effective RHS (mirrors Fortran's "B(i)=... + Q(i)"
+   read-from-global pattern). Earlier the local Q_intern array was
+   zero for non-Dirichlet nodes, silently dropping ~2.76 cm of EX.2
+   cumulative precipitation over 30 days — a 30 hPa systematic offset.
+
+2. `set_mat` can use a 100-point log-spaced (h, K, C, θ) interpolation
+   table (`build_material_tables`) that mirrors Fortran GenMat exactly,
+   so the table quantization error is reproduced bit-equal. Direct
+   FK/FC/FQ calls would be marginally more accurate but would no longer
+   match Fortran printed output.
 
 ### Material model selection (Vogel-Cislerova)
 
