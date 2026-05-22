@@ -245,6 +245,7 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
         cBound[:4] = 0.0
 
     WeTab: NDArray[np.float64] | None = None
+    DS_solute = np.zeros(NumNP, np.float64)   # persists for c_bound
     for Level in range(1, NLevel + 1):
         Eps = epsi if Level == NLevel else (1.0 - epsi)
         # Recompute velocities + dispersion at the current iterate
@@ -280,7 +281,11 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
                 Fc[i] = ChPar[5, M] * ThOld[i] + ChPar[0, M] * ChPar[6, M] * ChPar[4, M] + Sink[i]
 
         F = np.zeros(NumNP, np.float64)
-        DS = np.zeros(NumNP, np.float64) if Level == NLevel else None
+        if Level == NLevel:
+            DS_solute.fill(0.0)
+            DS = DS_solute
+        else:
+            DS = None
         NumSEl = 0
 
         # Element loop
@@ -402,7 +407,6 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
 
     # ---- Boundary conditions (c_Bound)
     A = A.tolil()
-    DS_dummy = np.zeros(NumNP, np.float64)
     # Build KXB → KodCB lookup
     kxb_to_kodcb: dict[int, int] = {int(KXB[k]): int(KodCB[k]) for k in range(mesh.NumBP)}
     for i in range(NumNP):
@@ -449,7 +453,7 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
                 cKod = 3
         # Apply
         if cKod == 1:
-            Qc[i] += Q[i] * (epsi * cBnd + alf * Conc[i]) - DS_dummy[i] * (cBnd - Conc[i]) / dt
+            Qc[i] += Q[i] * (epsi * cBnd + alf * Conc[i]) - DS_solute[i] * (cBnd - Conc[i]) / dt
             # Zero row, set diag = 1, RHS = cBnd
             row_dense = np.zeros(NumNP)
             A.rows[i] = [int(i)]
