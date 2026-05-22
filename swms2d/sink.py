@@ -77,7 +77,7 @@ def normalize_beta(mesh: Mesh, KAT: int) -> None:
             AE = (CK * BJ - CJ * BK) / 2.0
             xMul = 1.0
             if KAT == 1:
-                xMul = 2.0 * np.pi * (x[i] + x[j] + x[l]) / 3.0
+                xMul = 2.0 * 3.1416 * (x[i] + x[j] + x[l]) / 3.0
             BetaE = (Beta[i] + Beta[j] + Beta[l]) / 3.0
             SBeta += xMul * AE * BetaE
     if SBeta > 0.0:

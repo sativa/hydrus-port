@@ -126,6 +126,78 @@ def disper(Vx: NDArray[np.float64], Vz: NDArray[np.float64],
 
 
 # ============================================================================
+# Upstream weighting factors (WeFact in SOLUTE2.FOR L513-583)
+# ============================================================================
+
+def we_fact(mesh: Mesh,
+            Vx: NDArray[np.float64], Vz: NDArray[np.float64],
+            Dxx: NDArray[np.float64], Dxz: NDArray[np.float64],
+            Dzz: NDArray[np.float64],
+            ) -> NDArray[np.float64]:
+    """Compute upstream weighting table per subelement side.
+
+    Returns WeTab of shape (3, 2*NumEl) — for each (sub)element, three
+    per-side weights in [-1, 1]. Mirrors Fortran exactly.
+    """
+    NumEl = mesh.NumEl
+    KX = mesh.elements.KX
+    x  = mesh.nodes.x
+    y  = mesh.nodes.y
+    WeTab = np.zeros((3, 2 * NumEl), np.float64)
+    NumSEl = 0
+    for e in range(NumEl):
+        NCorn = 3 if KX[e, 2] == KX[e, 3] else 4
+        for n in range(NCorn - 2):
+            M1 = KX[e, 0]
+            M2 = KX[e, n + 1]
+            M3 = KX[e, n + 2]
+            beta = (
+                np.arctan2(y[M2] - y[M1], x[M2] - x[M1]),
+                np.arctan2(y[M3] - y[M2], x[M3] - x[M2]),
+                np.arctan2(y[M1] - y[M3], x[M1] - x[M3]),
+            )
+            LIST = (M1, M2, M3)
+            for j in range(3):
+                k = j - 1 if j > 0 else 2
+                WeTab[k, NumSEl] = 0.0
+                m1 = LIST[j]
+                m2 = LIST[(j + 1) % 3]
+                Vxx = (Vx[m1] + Vx[m2]) / 2.0
+                Vzz = (Vz[m1] + Vz[m2]) / 2.0
+                if abs(Vxx) < 1e-30 and abs(Vzz) < 1e-30:
+                    continue
+                BetaV = np.arctan2(Vzz, Vxx)
+                Delta = abs(BetaV - beta[j])
+                if Delta > 0.314 and abs(Delta - 3.1416) > 0.314:
+                    continue
+                ALeng = np.sqrt((x[m2] - x[m1])**2 + (y[m2] - y[m1])**2)
+                CB = np.cos(beta[j])
+                SB = np.sin(beta[j])
+                Val = Vxx * CB + Vzz * SB
+                VV = np.sqrt(Vxx**2 + Vzz**2)
+                DLL = (Dxx[m1] + Dxx[m2]) / 2.0
+                DLT = (Dxz[m1] + Dxz[m2]) / 2.0
+                DTT = (Dzz[m1] + Dzz[m2]) / 2.0
+                DAL = abs(DLL * CB * CB + 2.0 * CB * SB * DLT + DTT * SB * SB)
+                Vel = Val * ALeng
+                Disp = 2.0 * DAL
+                aa = 11.0
+                if abs(Disp) > 1e-30:
+                    aa = abs(Vel / Disp)
+                if abs(Disp) < 1e-30 or abs(Val) < 0.001 * VV or abs(aa) > 10.0:
+                    if abs(Val) < 0.001 * VV:
+                        WeTab[k, NumSEl] = 0.0
+                    if Val > 0.001 * VV:
+                        WeTab[k, NumSEl] = 1.0
+                    if Val < -0.001 * VV:
+                        WeTab[k, NumSEl] = -1.0
+                else:
+                    WeTab[k, NumSEl] = 1.0 / np.tanh(Vel / Disp) - Disp / Vel
+            NumSEl += 1
+    return WeTab
+
+
+# ============================================================================
 # Main solute step (Solute in SOLUTE2.FOR L3-281)
 # ============================================================================
 
@@ -172,6 +244,7 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
         cBound = cBound.copy()
         cBound[:4] = 0.0
 
+    WeTab: NDArray[np.float64] | None = None
     for Level in range(1, NLevel + 1):
         Eps = epsi if Level == NLevel else (1.0 - epsi)
         # Recompute velocities + dispersion at the current iterate
@@ -179,6 +252,8 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
             Vx, Vz = veloc(mesh, hNew, Con, KAT)
             Dxx, Dxz, Dzz = disper(Vx, Vz, ThNew, thSat, ChPar, MatNum,
                                     lArtD, PeCr, dt)
+            if lUpW:
+                WeTab = we_fact(mesh, Vx, Vz, Dxx, Dxz, Dzz)
         else:
             Vx, Vz = veloc(mesh, hOld, ConO, KAT)
             Dxx, Dxz, Dzz = disper(Vx, Vz, ThOld, thSat, ChPar, MatNum,
@@ -206,6 +281,7 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
 
         F = np.zeros(NumNP, np.float64)
         DS = np.zeros(NumNP, np.float64) if Level == NLevel else None
+        NumSEl = 0
 
         # Element loop
         for n in range(NumEl):
@@ -249,7 +325,7 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
 
                 xMul = 1.0
                 if KAT == 1:
-                    xMul = 2.0 * np.pi * (x[i] + x[j] + x[l]) / 3.0
+                    xMul = 2.0 * 3.1416 * (x[i] + x[j] + x[l]) / 3.0
                 FMul  = xMul * AE / 4.0
                 SMul1 = -1.0 / AE / 4.0 * xMul
                 SMul2 = AE / 20.0 * xMul
@@ -260,6 +336,26 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
                 Ec1 = (Dxx[i] + Dxx[j] + Dxx[l]) / 3.0
                 Ec2 = (Dxz[i] + Dxz[j] + Dxz[l]) / 3.0
                 Ec3 = (Dzz[i] + Dzz[j] + Dzz[l]) / 3.0
+
+                # Per-sub-element upwind W vector (SOLUTE2.FOR L191-202)
+                if lUpW and WeTab is not None:
+                    W1 = WeTab[0, NumSEl]
+                    W2 = WeTab[1, NumSEl]
+                    W3 = WeTab[2, NumSEl]
+                    Wx = (
+                        2*VxE[0]*(W2-W3) + VxE[1]*(W2-2*W3) + VxE[2]*(2*W2-W3),
+                        VxE[0]*(2*W3-W1) + 2*VxE[1]*(W3-W1) + VxE[2]*(W3-2*W1),
+                        VxE[0]*(W1-2*W2) + VxE[1]*(2*W1-W2) + 2*VxE[2]*(W1-W2),
+                    )
+                    Wz = (
+                        2*VzE[0]*(W2-W3) + VzE[1]*(W2-2*W3) + VzE[2]*(2*W2-W3),
+                        VzE[0]*(2*W3-W1) + 2*VzE[1]*(W3-W1) + VzE[2]*(W3-2*W1),
+                        VzE[0]*(W1-2*W2) + VzE[1]*(2*W1-W2) + 2*VzE[2]*(W1-W2),
+                    )
+                else:
+                    Wx = (0.0, 0.0, 0.0)
+                    Wz = (0.0, 0.0, 0.0)
+                NumSEl += 1
 
                 for j1 in range(3):
                     i1 = LIST[j1]
@@ -273,6 +369,9 @@ def solute_step(mesh: Mesh, cfg: SimulationConfig,
                                      + Ec2 * (Bi[j1] * Ci[j2] + Ci[j1] * Bi[j2]))
                         S -= (Bi[j2] / 8.0 * (VxEE + VxE[j1] / 3.0)
                               + Ci[j2] / 8.0 * (VzEE + VzE[j1] / 3.0)) * xMul
+                        if lUpW:
+                            S -= xMul * (Bi[j2] / 40.0 * Wx[j1]
+                                         + Ci[j2] / 40.0 * Wz[j1])
                         ic = 2 if i1 == i2 else 1
                         S += SMul2 * ic * (FcE + (Fc[i1] + Fc[i2]) / 3.0)
                         if Level != NLevel:

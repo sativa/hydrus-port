@@ -229,7 +229,7 @@ def reset(mesh: Mesh, cfg: SimulationConfig,
             ConE = (Con[i] + Con[j] + Con[l]) / 3.0
             xMul = 1.0
             if KAT == 1:
-                xMul = 2.0 * np.pi * (x[i] + x[j] + x[l]) / 3.0
+                xMul = 2.0 * 3.1416 * (x[i] + x[j] + x[l]) / 3.0
             AMul = xMul * ConE / 4.0 / AE
             BMul = xMul * ConE / 2.0
             FMul = xMul * AE / 12.0

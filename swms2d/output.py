@@ -26,6 +26,40 @@ from .dataclasses import Mesh
 # Header (written once at file open)
 # ---------------------------------------------------------------------------
 
+def _fortran_e(x: float, width: int = 11, digits: int = 3) -> str:
+    """Format like Fortran's e<width>.<digits>: leading-zero mantissa.
+
+    Fortran's `e11.3` writes  `0.XXXE+NN` (3 fractional digits in mantissa,
+    sign and E+NN take 4 chars, plus the leading space, total 11). Python's
+    standard `.3e` is `X.XXXe+NN` (one digit before the decimal). This
+    function converts to the leading-zero form by shifting the mantissa
+    one position right and bumping the exponent by 1.
+    """
+    if x == 0.0:
+        s = " 0." + "0" * digits + "E+00"
+        return s.rjust(width)
+    # Round to (digits) sig figs in Fortran's "0.XXX" sense — that's the
+    # same as Python's `(digits-1)e` because Python keeps one digit before
+    # the decimal. Example: 0.5557 with digits=3 -> Python "5.56e-01" ->
+    # Fortran "0.556E+00".
+    s = f"{x:.{digits-1}e}"
+    if 'e' in s:
+        mant, exp = s.split('e')
+    else:
+        mant, exp = s, '+00'
+    sign = '-' if mant.startswith('-') else ''
+    if sign:
+        mant = mant[1:]
+    # Mant is "X.YY..." with (digits-1) chars after dot
+    head, _, tail = mant.partition('.')
+    body = head + tail   # e.g. "556"
+    new_mant = f"{sign}0.{body[:digits]}"
+    new_exp_val = int(exp) + 1
+    sign_exp = '+' if new_exp_val >= 0 else '-'
+    new_exp = f"E{sign_exp}{abs(new_exp_val):02d}"
+    return f"{new_mant}{new_exp}".rjust(width)
+
+
 def _write_common_header(f: TextIO, heading: str, units: list[str],
                          kat: int, atm_inf: bool = False) -> None:
     """Header block shared by h.out / th.out / Q.out etc."""
@@ -119,7 +153,7 @@ class ConcOutWriter:
                 row = f"{m+1:5d}{mesh.nodes.x[m]:8.1f}{mesh.nodes.y[m]:8.1f}"
                 for j in range(m, k + 1):
                     if j < NumNP:
-                        row += f"{conc[j]:11.3e}".replace("e", "E")
+                        row += _fortran_e(float(conc[j]), width=11, digits=3)
                 f.write(row + "\n")
 
     def close(self) -> None:
