@@ -126,6 +126,9 @@ class SWMS2DSimulation:
         self.tOld = self.time.tInit
         self.dtOld = self.time.dt
         self.TLevel = 1
+        # lMinStep: set by SetAtm when a BC value changes so TmCont
+        # throttles dt back to dtInit for one step (mirrors Fortran flag).
+        self.lMinStep = False
 
         # Solute init
         if self.cfg.lChem:
@@ -157,7 +160,10 @@ class SWMS2DSimulation:
     # ----------------------------------------------------------------
     def _set_atm(self) -> None:
         """SetAtm (TIME2.FOR L26-66) — read the current atm record and apply
-        it to boundary nodes; tAtm becomes the END of this record's validity."""
+        it to boundary nodes; tAtm becomes the END of this record's validity.
+        Sets `lMinStep` = True when any BC value changes from the previous
+        record so TmCont can throttle dt back to dtInit (Fortran throttles
+        to dtMax=dtInit for one step after a BC change)."""
         if self.atm_records is None:
             return
         if self.atm_idx >= self.atm_records.shape[0]:
@@ -165,6 +171,7 @@ class SWMS2DSimulation:
             return
         rec = self.atm_records[self.atm_idx]
         # tAtm, Prec, cPrec, rSoil, rRoot, hCritA, rGWL, GWL, crt, cht
+        rTopOld = self.rTop
         self.tAtm = rec[0]
         Prec  = abs(rec[1])
         rSoil = abs(rec[3])
@@ -185,9 +192,17 @@ class SWMS2DSimulation:
                 nodes.Q[n] = -Width[i] * self.rTop
                 continue
             if K == 3:
+                if abs(nodes.hNew[n] - hGWL) > 1e-8:
+                    self.lMinStep = True
                 nodes.hNew[n] = hGWL
             if K == -3 and not self.cfg.qGWLF and not self.cfg.FreeD:
+                if Width[i] > 0.0:
+                    rGWLOld = -nodes.Q[n] / Width[i]
+                    if abs(rGWLOld - rGWL) > 1e-8:
+                        self.lMinStep = True
                 nodes.Q[n] = -Width[i] * rGWL
+        if abs(self.rTop - rTopOld) > 1e-8 and abs(self.rTop) > 0.0:
+            self.lMinStep = True
         self.atm_idx += 1
 
     # ----------------------------------------------------------------
@@ -213,7 +228,13 @@ class SWMS2DSimulation:
         """
         tnext = self.TPrint[self.PLevel] if self.PLevel < len(self.TPrint) else self.time.tMax
         tFix = min(tnext, self.tAtm, self.time.tMax)
-        dtMax = self.time.dtMaxW   # no atmospheric Courant limit at Stage 1
+        # lMinStep (TIME2.FOR L7-12): one-step dtMax throttle to dtInit after
+        # any boundary value change.
+        if self.lMinStep:
+            dtMax = min(self.time.dtMaxW, self.time.dtInit)
+            self.lMinStep = False
+        else:
+            dtMax = self.time.dtMaxW   # no atmospheric Courant limit at Stage 1
         dtOpt = self.time.dtOpt
         # Grow / shrink dtOpt by iter count (Fortran uses <= 3 and >= 7)
         if n_iter <= 3 and (tFix - self.t) >= self.time.dMul * dtOpt:
