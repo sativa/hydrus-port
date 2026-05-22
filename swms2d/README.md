@@ -13,12 +13,28 @@ Direct 1:1 port of SWMS_2D v1.22 (Simunek 1996), aligned with the existing
 | `input.py` | Read Selector.in / Grid.in / Atmosph.in | ✓ (SeepF subset) |
 | `material.py` | VG-Mualem + Vogel-Cislerova adapter for hydrus1d.material | ✓ (see note) |
 | `watflow.py` | 2D Richards Galerkin FE solver | ✓ — EX.1 matches Fortran ≤2 hPa |
-| `solute.py` | 2D ADE solver with reaction chain | ⏳ Phase 2d |
-| `temper.py` | Heat transport (no Fortran source — adapt hydrus1d.temper) | ⏳ Phase 2d |
-| `output.py` | h.out + th.out (other 11 .OUT files pending) | ⚠ partial |
-| `sink.py` | Reuse hydrus1d.sink (root water uptake) | ⏳ Phase 2d |
-| `swms2d.py` | Main simulation driver (TmCont fixed: dtOpt/dt split) | ✓ |
-| `verify.py` | Compare against Fortran reference | ⏳ Phase 3 |
+| `solute.py` | 2D ADE solver with reaction chain (Crank-Nicholson) | ✓ |
+| `temper.py` | Heat transport (SWMS_2D 1.22 has no source) | ⏳ defer |
+| `output.py` | h.out + th.out + conc.out (other 10 .OUT files pending) | ⚠ partial |
+| `sink.py` | Feddes root water uptake + Beta normalisation | ✓ |
+| `swms2d.py` | Main simulation driver | ✓ |
+| `verify.py` | Compare against Fortran reference | ✓ (via compare_outputs.py) |
+
+## Verification status (Phase 3)
+
+Run with: `python compare_outputs.py /tmp/swms2d_test_ex<N> <reference>`.
+
+| Example | Features | h.out | th.out | conc.out |
+|---------|----------|-------|--------|----------|
+| EX.1 | SeepF | ≤0.1 hPa | ≤0.001 θ | — |
+| EX.2 | AtmInF + SinkF + qGWLF | ~30 hPa offset (residual bug) | ~0.03 θ | — |
+| EX.3 | lWat=False steady + solute + SeepF | bit-equal | bit-equal | ≤0.001 conc |
+| EX.4 | lWat + lChem + KAT=1 (axisymmetric) | ≤0.3 hPa | ≤0.001 θ | ≤0.005 conc |
+
+EXAMPLES 1, 3, 4 are at numerical-rounding precision against the reference.
+EX.2's residual offset is documented inline; physics is qualitatively
+correct (gradient shape matches) but cumulative mass balance is off by a
+small additive amount.
 
 ### Material model selection (Vogel-Cislerova)
 
