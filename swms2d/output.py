@@ -27,20 +27,21 @@ from .dataclasses import Mesh
 # ---------------------------------------------------------------------------
 
 def _write_common_header(f: TextIO, heading: str, units: list[str],
-                         kat: int) -> None:
+                         kat: int, atm_inf: bool = False) -> None:
     """Header block shared by h.out / th.out / Q.out etc."""
-    # Original Fortran writes heading padded to 72 chars + trailing newline.
     f.write(f" {heading:<72}\n")
     f.write("\n")
     f.write(" Program SWMS_2D\n")
-    f.write(" Time independent boundary conditions\n")
+    if atm_inf:
+        f.write(" Time dependent boundary conditions\n")
+    else:
+        f.write(" Time independent boundary conditions\n")
     if kat == 0:
         f.write(" Horizontal plane flow, V = L*L\n")
     elif kat == 1:
         f.write(" Axisymmetric flow, V = L*L*L\n")
     else:
         f.write(" Vertical plane flow, V = L*L\n")
-    # Units line: '%-5s, T = %-5s, M = %-5s'  -- match Fortran width
     L, T, M = (units + ["-", "-", "-"])[:3]
     f.write(f" Units: L = {L:<5}, T = {T:<5}, M = {M:<5}\n")
 
@@ -52,9 +53,10 @@ def _write_common_header(f: TextIO, heading: str, units: list[str],
 class HOutWriter:
     """Wraps file handle + state needed across multiple h.out writes."""
 
-    def __init__(self, path: Path, heading: str, units: list[str], kat: int):
+    def __init__(self, path: Path, heading: str, units: list[str], kat: int,
+                 atm_inf: bool = False):
         self.f = open(path, "w")
-        _write_common_header(self.f, heading, units, kat)
+        _write_common_header(self.f, heading, units, kat, atm_inf)
 
     def write_snapshot(self, t: float, mesh: Mesh, h: NDArray[np.float64]) -> None:
         """Append one time-block to h.out matching OUTPUT2.FOR L406-426."""
@@ -125,9 +127,10 @@ class ConcOutWriter:
 
 
 class ThOutWriter:
-    def __init__(self, path: Path, heading: str, units: list[str], kat: int):
+    def __init__(self, path: Path, heading: str, units: list[str], kat: int,
+                 atm_inf: bool = False):
         self.f = open(path, "w")
-        _write_common_header(self.f, heading, units, kat)
+        _write_common_header(self.f, heading, units, kat, atm_inf)
 
     def write_snapshot(self, t: float, mesh: Mesh,
                        theta: NDArray[np.float64]) -> None:

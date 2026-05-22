@@ -42,19 +42,65 @@ from . import material as _mat
 # Material property update at all nodes (mirrors SetMat in WATFLOW2.FOR)
 # ============================================================================
 
+# Log-spaced K/C/θ tables, built once per simulation, indexed by material.
+# Mirrors Fortran GenMat (INPUT2.FOR L117-145) so SetMat's linear-interp
+# rounding error is reproduced bit-equal.
+_TABLE_CACHE: dict[int, tuple] = {}
+
+
+def build_material_tables(materials: list[SoilMaterial],
+                          hTab1: float, hTabN: float,
+                          NTab: int = 100) -> tuple:
+    """Build (hTab, ConTab, CapTab, TheTab) following Fortran GenMat.
+
+    hTab1, hTabN: positive numbers (read straight from BLOCK B); Fortran
+    flips sign on them internally (`hTab(i)=-10**alh`).
+    """
+    from hydrus1d.material import FK as _FK, FC as _FC, FQ as _FQ
+    h1 = -abs(hTab1)
+    hN = -abs(hTabN)
+    alh1 = np.log10(-h1)
+    dlh  = (np.log10(-hN) - alh1) / (NTab - 1)
+    hTab = -10.0 ** (alh1 + np.arange(NTab) * dlh)
+    nm = len(materials)
+    ConTab = np.zeros((NTab, nm), np.float64)
+    CapTab = np.zeros((NTab, nm), np.float64)
+    TheTab = np.zeros((NTab, nm), np.float64)
+    for M, mat in enumerate(materials):
+        iModel = _mat.select_imodel(mat)
+        Par = _mat.to_h1d_par(mat)
+        for i in range(NTab):
+            ConTab[i, M] = _FK(iModel, float(hTab[i]), Par)
+            CapTab[i, M] = _FC(iModel, float(hTab[i]), Par)
+            TheTab[i, M] = _FQ(iModel, float(hTab[i]), Par)
+    return hTab, ConTab, CapTab, TheTab, alh1, dlh
+
+
+def _table_lookup(h: float, tab_y: NDArray[np.float64],
+                  hTab: NDArray[np.float64],
+                  alh1: float, dlh: float) -> float:
+    """Linear interpolation matching Fortran SetMat L455-457."""
+    # iT = floor((log10(-h) - alh1)/dlh)  [Fortran 1-based; here 0-based]
+    iT = int((np.log10(-h) - alh1) / dlh)
+    if iT < 0:
+        iT = 0
+    elif iT >= hTab.shape[0] - 1:
+        iT = hTab.shape[0] - 2
+    S1 = (tab_y[iT + 1] - tab_y[iT]) / (hTab[iT + 1] - hTab[iT])
+    return tab_y[iT] + S1 * (h - hTab[iT])
+
+
 def set_mat(mesh: Mesh, materials: list[SoilMaterial],
             thR: NDArray[np.float64], thSat: NDArray[np.float64],
             hSat: NDArray[np.float64], ConSat: NDArray[np.float64],
-            Explic: bool = False
+            Explic: bool = False,
+            tables: Optional[tuple] = None,
             ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    """
-    Evaluate Con, Cap, Theta at every node based on current hNew/hOld.
+    """Evaluate Con, Cap, Theta at every node (WATFLOW2.FOR L433-482).
 
-    Returns (Con, Cap, Theta) — same arrays as in the Fortran call signature.
-
-    Mirrors WATFLOW2.FOR L433-482 EXCEPT we skip table interpolation and
-    call FK/FC/FQ directly. Anisotropy scaling Axz/Bxz/Dxz is applied
-    exactly as in Fortran.
+    If tables is provided ((hTab, ConTab, CapTab, TheTab, alh1, dlh)) we use
+    log-spaced linear interpolation matching Fortran exactly; otherwise we
+    fall back to direct FK/FC/FQ calls.
     """
     n = mesh.NumNP
     Con = np.zeros(n, np.float64)
@@ -65,11 +111,18 @@ def set_mat(mesh: Mesh, materials: list[SoilMaterial],
     pars = [(_mat.select_imodel(m), _mat.to_h1d_par(m)) for m in materials]
     from hydrus1d.material import FK as _FK, FC as _FC, FQ as _FQ
 
+    if tables is not None:
+        hTab, ConTab, CapTab, TheTab, alh1, dlh = tables
+        hTab_first = float(hTab[0])
+        hTab_last  = float(hTab[-1])
+    else:
+        hTab_first = hTab_last = 0.0
+
     for i in range(n):
         M = nodes.MatNum[i] - 1
         iModel, Par = pars[M]
         hSat_m = hSat[M]
-        # K(h) — average of two iterate snapshots (h_temp blended with h_new)
+        # K(h) at blended iterate
         hi1 = min(hSat_m, nodes.hTemp[i] / nodes.Axz[i])
         hi2 = min(hSat_m, nodes.hNew[i]  / nodes.Axz[i])
         if Explic:
@@ -77,16 +130,23 @@ def set_mat(mesh: Mesh, materials: list[SoilMaterial],
         hiM = 0.1 * hi1 + 0.9 * hi2
         if hi1 >= hSat_m and hi2 >= hSat_m:
             Ci = ConSat[M]
+        elif (tables is not None
+              and hiM >= hTab_last and hiM <= hTab_first):
+            Ci = _table_lookup(hiM, ConTab[:, M], hTab, alh1, dlh)
         else:
             Ci = _FK(iModel, hiM, Par)
         Con[i] = nodes.Bxz[i] * Ci
-        # Cap, Theta — evaluated at hNew (or hOld if explicit)
+        # Cap, Theta at hNew (or hOld if explicit)
         hi2 = nodes.hNew[i] / nodes.Axz[i]
         if Explic:
             hi2 = nodes.hOld[i] / nodes.Axz[i]
         if hi2 >= hSat_m:
             Ci = 0.0
             Ti = thSat[M]
+        elif (tables is not None
+              and hi2 >= hTab_last and hi2 <= hTab_first):
+            Ci = _table_lookup(hi2, CapTab[:, M], hTab, alh1, dlh)
+            Ti = _table_lookup(hi2, TheTab[:, M], hTab, alh1, dlh)
         else:
             Ci = _FC(iModel, hi2, Par)
             Ti = _FQ(iModel, hi2, Par)
@@ -208,10 +268,19 @@ def reset(mesh: Mesh, cfg: SimulationConfig,
     K_csr: csr_matrix = K_coo.tocsr()           # type: ignore[assignment]
     K_csr.sum_duplicates()
 
-    # Boundary flux recovery at Dirichlet nodes (Kode >= 1)
-    # Q_intern(n) = B(n) + DS(n) + F(n)*dθ/dt + (K·h_new)(n)
+    # Boundary flux recovery at Dirichlet nodes (Kode >= 1) and propagation
+    # of prescribed Q at flux-BC nodes (Kode < 1) into the linear system.
+    #
+    # Fortran's Reset (WATFLOW2.FOR L247-269) only overwrites Q(n) for
+    # Kode>=1 — for Kode<1 (atmospheric, seepage, etc.) the Q in the global
+    # array was already set by SetAtm/Shift and the L271-279 effective-RHS
+    # loop uses that prescribed flux directly via "B(i)=... + Q(i) - ...".
+    # In Python we mirror this by seeding Q_eff with mesh.nodes.Q (which
+    # carries the SetAtm-set atm flux), then overwriting Kode>=1 entries
+    # with the newly-computed Q_intern flux.
     Kode = mesh.nodes.Kode
     hNew = mesh.nodes.hNew
+    Q_eff = mesh.nodes.Q.astype(np.float64, copy=True)
     Q_intern = np.zeros(NumNP, np.float64)
     K_h = K_csr @ hNew                          # one matvec
     for nn in range(NumNP):
@@ -220,6 +289,7 @@ def reset(mesh: Mesh, cfg: SimulationConfig,
         Q_intern[nn] = (B[nn] + DS[nn]
                         + F[nn] * (ThNew[nn] - ThOld[nn]) / dt
                         + K_h[nn])
+        Q_eff[nn] = Q_intern[nn]
 
     # Now add M/dt to diagonal and form effective RHS
     diag_add = F * Cap / dt
@@ -229,7 +299,7 @@ def reset(mesh: Mesh, cfg: SimulationConfig,
     )
     B_eff = (F * Cap * hNew / dt
              - F * (ThNew - ThOld) / dt
-             + Q_intern
+             + Q_eff
              - B
              - DS)
 
@@ -369,6 +439,7 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
                      GWL0L: float = 0.0, Aqh: float = 0.0, Bqh: float = 0.0,
                      Sink: Optional[NDArray[np.float64]] = None,
                      P3: float = 0.0,
+                     tables: Optional[tuple] = None,
                      ) -> tuple[float, float, int, bool,
                                 NDArray[np.float64], NDArray[np.float64],
                                 NDArray[np.float64], NDArray[np.float64]]:
@@ -407,7 +478,7 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
         while True:
             # SetMat
             Con, Cap, ThNew_new = set_mat(mesh, materials, thR, thSat, hSat,
-                                          ConSat, Explic=Explic)
+                                          ConSat, Explic=Explic, tables=tables)
             ThNew[:] = ThNew_new
             # Reset
             A_csr, B_eff, F, Q_intern_new = reset(mesh, cfg, Con, Cap,
@@ -481,7 +552,7 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
             Explic = True
             # Run once more in explicit mode then return
             Con, Cap, ThNew_new = set_mat(mesh, materials, thR, thSat, hSat,
-                                          ConSat, Explic=True)
+                                          ConSat, Explic=True, tables=tables)
             ThNew[:] = ThNew_new
             return (dt_current, tOld + dt_current, Iter, False,
                     Con, Cap, ThNew, Q_intern)

@@ -26,7 +26,7 @@ from .dataclasses import (
 )
 from .input import parse_example
 from .material import saturated_values
-from .watflow import solve_water_flow, set_mat
+from .watflow import solve_water_flow, set_mat, build_material_tables
 from .output import HOutWriter, ThOutWriter, ConcOutWriter
 from .sink import set_snk, normalize_beta
 from .solute import solute_step
@@ -53,6 +53,14 @@ class SWMS2DSimulation:
         # Material-derived constants
         self.thR, self.thSat, self.hSat, self.ConSat = \
             saturated_values(self.materials)
+
+        # Log-spaced K/C/θ table (mirrors Fortran GenMat — needed for
+        # bit-equal numerical match with the Fortran reference)
+        self.tables = build_material_tables(
+            self.materials,
+            hTab1=self.extras["hTab1"], hTabN=self.extras["hTabN"],
+            NTab=100,
+        )
 
         # State arrays
         NumNP = self.mesh.NumNP
@@ -137,9 +145,11 @@ class SWMS2DSimulation:
         heading = self.extras["heading"]
         units = self.extras["units"]
         self.h_writer  = HOutWriter (self.output_dir / "h.out",
-                                     heading, units, self.cfg.KAT)
+                                     heading, units, self.cfg.KAT,
+                                     atm_inf=self.cfg.AtmInF)
         self.th_writer = ThOutWriter(self.output_dir / "th.out",
-                                     heading, units, self.cfg.KAT)
+                                     heading, units, self.cfg.KAT,
+                                     atm_inf=self.cfg.AtmInF)
         self.c_writer  = (ConcOutWriter(self.output_dir / "conc.out",
                                         heading, units, self.cfg.KAT)
                           if self.cfg.lChem else None)
@@ -187,7 +197,7 @@ class SWMS2DSimulation:
         self.mesh.nodes.hTemp[:] = self.mesh.nodes.hNew
         Con, Cap, Th = set_mat(self.mesh, self.materials,
                                self.thR, self.thSat, self.hSat, self.ConSat,
-                               Explic=False)
+                               Explic=False, tables=self.tables)
         self.ThOld[:] = Th
         self.ThNew[:] = Th
         self.ConO[:]  = Con
@@ -291,6 +301,7 @@ class SWMS2DSimulation:
                         rTop=self.rTop, hCritA=self.hCritA, hCritS=self.hCritS,
                         GWL0L=self.GWL0L, Aqh=self.Aqh, Bqh=self.Bqh,
                         Sink=self.Sink_arr, P3=self.P3,
+                        tables=self.tables,
                     )
                 self.t = t_new
                 self.time.dt = dt_used
