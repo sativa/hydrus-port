@@ -223,10 +223,52 @@ def parse_selector(path: Path) -> tuple[
             np_seep.append(nodes_k[:need])
         extras["NP"] = np_seep
 
+    # ---- BLOCK F: drainage (if DrainF) — DrainIn in INPUT2.FOR L204-251 ----
+    if cfg.DrainF and "BLOCK F" in block_positions:
+        # If lChem also true, drainage uses BLOCK F and solute uses BLOCK G.
+        next_tag = "BLOCK G" if "BLOCK G" in block_positions else None
+        f_data = _block_data_lines("BLOCK F", next_tag)
+        if f_data:
+            toks = _tokens(f_data[0])
+            NDr = int(toks[0])
+            DrCorr = float(toks[1]) if len(toks) > 1 else 1.0
+            cursor = 1
+            ND_drain: list[int] = []
+            while len(ND_drain) < NDr and cursor < len(f_data):
+                ND_drain.extend(int(x) for x in _tokens(f_data[cursor]))
+                cursor += 1
+            NED_drain: list[int] = []
+            while len(NED_drain) < NDr and cursor < len(f_data):
+                NED_drain.extend(int(x) for x in _tokens(f_data[cursor]))
+                cursor += 1
+            # NDr rows of EfDim (2 values per drain)
+            EfDim = np.zeros((NDr, 2), np.float64)
+            for i in range(NDr):
+                toks = _tokens(f_data[cursor]); cursor += 1
+                EfDim[i, 0] = float(toks[0])
+                EfDim[i, 1] = float(toks[1])
+            # NDr rows of drain-element lists
+            KElDr: list[list[int]] = []
+            for i in range(NDr):
+                need = NED_drain[i]
+                e_list: list[int] = []
+                while len(e_list) < need and cursor < len(f_data):
+                    e_list.extend(int(x) for x in _tokens(f_data[cursor]))
+                    cursor += 1
+                KElDr.append(e_list[:need])
+            extras["drain_NDr"] = NDr
+            extras["drain_DrCorr"] = DrCorr
+            extras["drain_ND"] = np.array(ND_drain[:NDr], np.int32)
+            extras["drain_NED"] = np.array(NED_drain[:NDr], np.int32)
+            extras["drain_EfDim"] = EfDim
+            extras["drain_KElDr"] = KElDr
+
     # ---- BLOCK F/G: solute transport (file uses BLOCK G in EX.3) ----
     # Look for either BLOCK F or BLOCK G as the solute section.
     chem_data: list[str] = []
-    for tag in ("BLOCK F", "BLOCK G"):
+    chem_tag_candidates = (["BLOCK G"] if cfg.DrainF
+                           else ["BLOCK F", "BLOCK G"])
+    for tag in chem_tag_candidates:
         if tag in block_positions:
             chem_data = _block_data_lines(tag, None)
             break

@@ -85,11 +85,24 @@ class SWMS2DSimulation:
         self.cfg, self.materials, self.time, self.mesh, self.extras = \
             parse_example(self.input_dir)
 
-        # Phase 2d supported feature set (DrainF still pending)
+        # DrainF setup — apply Vimoke-Taylor K-reduction once, store ND for
+        # the runtime Kode=±5 switching in shift().
         if self.cfg.DrainF:
-            raise NotImplementedError(
-                "DrainF (subsurface drains) not implemented."
-            )
+            from .drain import apply_vimoke_taylor
+            self.drain_NDr = self.extras.get("drain_NDr", 0)
+            if self.drain_NDr > 0:
+                NED = self.extras["drain_NED"]
+                EfDim = self.extras["drain_EfDim"]
+                KElDr = self.extras["drain_KElDr"]
+                DrCorr = self.extras["drain_DrCorr"]
+                apply_vimoke_taylor(self.mesh, self.drain_NDr, NED, EfDim,
+                                    KElDr, DrCorr)
+                self.drain_ND = self.extras["drain_ND"]
+            else:
+                self.drain_ND = None
+        else:
+            self.drain_NDr = 0
+            self.drain_ND = None
 
         # Material-derived constants
         self.thR, self.thSat, self.hSat, self.ConSat = \
@@ -373,6 +386,8 @@ class SWMS2DSimulation:
                         use_banded=self.use_banded,
                         debug_file=getattr(self, 'debug_file', None),
                         debug_TLevel=self.TLevel,
+                        NDr=self.drain_NDr,
+                        ND_drain=self.drain_ND,
                     )
                 self.t = t_new
                 self.time.dt = dt_used

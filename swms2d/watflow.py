@@ -364,6 +364,8 @@ def shift(mesh: Mesh, cfg: SimulationConfig,
           GWL0L: float, Aqh: float, Bqh: float,
           Con: NDArray[np.float64], ConO: NDArray[np.float64],
           Iter: int, Explic: bool,
+          NDr: int = 0,
+          ND_drain: Optional[NDArray[np.int32]] = None,
           ) -> None:
     """Modify mesh.nodes.Kode and mesh.nodes.Q based on current state.
 
@@ -389,9 +391,10 @@ def shift(mesh: Mesh, cfg: SimulationConfig,
                         Kode[n] = -2
                         Q[n] = 0.0
 
-    # ---- DrainF: not implemented (no Stage 1 example uses it)
-    if cfg.DrainF:
-        raise NotImplementedError("DrainF (subsurface drains) not implemented.")
+    # ---- DrainF: subsurface drain switching (Kode=-5 ↔ +5)
+    if cfg.DrainF and NDr > 0 and ND_drain is not None:
+        from .drain import shift_drain
+        shift_drain(mesh, NDr, ND_drain)
 
     # ---- AtmInF: surface flux ↔ critical pressure switching, GWL flux
     if cfg.AtmInF:
@@ -697,6 +700,8 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
                      use_banded: bool = False,
                      debug_file: Optional[object] = None,
                      debug_TLevel: int = 0,
+                     NDr: int = 0,
+                     ND_drain: Optional[NDArray[np.int32]] = None,
                      ) -> tuple[float, float, int, bool,
                                 NDArray[np.float64], NDArray[np.float64],
                                 NDArray[np.float64], NDArray[np.float64]]:
@@ -822,9 +827,11 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
             # nodes (Kode < 1) keep the Q value set by SetAtm / SetSnk.
             dir_mask = nodes.Kode >= 1
             nodes.Q[dir_mask] = Q_intern_new[dir_mask]
-            # Shift (seepage / atmospheric / free-drain — may flip Kode/hNew/Q)
+            # Shift (seepage / atmospheric / free-drain / drain — may flip
+            # Kode/hNew/Q at flux-BC nodes)
             shift(mesh, cfg, NSeep, NSP, NP_seep, rTop, hCritA, hCritS,
-                  GWL0L, Aqh, Bqh, Con, ConO, Iter, Explic)
+                  GWL0L, Aqh, Bqh, Con, ConO, Iter, Explic,
+                  NDr=NDr, ND_drain=ND_drain)
             # Dirich
             A_dir = dirich(A_csr, B_eff, nodes.Kode, nodes.hNew)
             # Solve
