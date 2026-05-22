@@ -35,10 +35,30 @@ from .solute import solute_step
 class SWMS2DSimulation:
     """One SWMS_2D run end-to-end."""
 
-    def __init__(self, input_dir: Path | str, output_dir: Path | str):
+    def __init__(self, input_dir: Path | str, output_dir: Path | str,
+                 use_anderson: bool = False, anderson_m: int = 3,
+                 refine_solve: bool = False):
+        """
+        Parameters
+        ----------
+        input_dir, output_dir : Path-like
+            SWMS_2D.IN and SWMS_2D.OUT directories.
+        use_anderson : bool, default False
+            If True, accelerate the Picard fixed-point iteration with
+            Anderson(m). Improves convergence in ill-conditioned cases
+            (e.g. EX.2 dry-spell around day 210-212) but changes the
+            converged-to-tolerance fixed point slightly, so output is no
+            longer bit-equal to the Fortran reference. Default False
+            preserves Fortran-matching behaviour.
+        anderson_m : int, default 3
+            Anderson buffer depth (number of past residuals to use).
+        """
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.use_anderson = use_anderson
+        self.anderson_m = anderson_m
+        self.refine_solve = refine_solve
 
         # Parse input
         self.cfg, self.materials, self.time, self.mesh, self.extras = \
@@ -323,6 +343,9 @@ class SWMS2DSimulation:
                         GWL0L=self.GWL0L, Aqh=self.Aqh, Bqh=self.Bqh,
                         Sink=self.Sink_arr, P3=self.P3,
                         tables=self.tables,
+                        use_anderson=self.use_anderson,
+                        anderson_m=self.anderson_m,
+                        refine_solve=self.refine_solve,
                     )
                 self.t = t_new
                 self.time.dt = dt_used

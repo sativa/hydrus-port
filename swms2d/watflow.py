@@ -30,7 +30,7 @@ from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
 from scipy.sparse import coo_matrix, csr_matrix, csc_matrix
-from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import spsolve, splu
 
 from .dataclasses import (
     Mesh, SoilMaterial, SimulationConfig, TimeControl,
@@ -423,6 +423,111 @@ def dirich(A: csr_matrix, B: NDArray[np.float64],
 
 
 # ============================================================================
+# Iterative refinement of the sparse LU solve.
+#
+# scipy.sparse.linalg.spsolve returns x with the precision of one LU back-
+# substitution — for ill-conditioned A (large condition number) the
+# accuracy can be much worse than working precision. Two LU implementations
+# (e.g. SuperLU vs banded Gauss) take different pivoting/fill-in paths and
+# produce x values that differ in the lower bits.
+#
+# Iterative refinement (Wilkinson 1963; LAPACK *RFS family) brings the
+# solution to ~working precision regardless of the underlying LU path:
+#     x_0 = LU \ b
+#     r_k = b - A x_k      (residual)
+#     dx_k = LU \ r_k       (cheap — reuses LU factors)
+#     x_{k+1} = x_k + dx_k
+# Iterate until ||r_k|| stops decreasing. Three iters is usually enough
+# to recover near-machine precision.
+# ============================================================================
+
+def _solve_refined(A: csc_matrix, b: NDArray[np.float64],
+                   max_iters: int = 3,
+                   rel_tol: float = 1e-12,
+                   ) -> NDArray[np.float64]:
+    """LU solve with iterative refinement. Drop-in for spsolve.
+
+    Returns x ≈ A⁻¹b accurate to ~machine precision in the residual
+    sense, regardless of the LU implementation's internal path.
+    """
+    lu = splu(A)
+    x = lu.solve(b)
+    bn = float(np.max(np.abs(b)))
+    if bn == 0.0:
+        return x
+    for _ in range(max_iters):
+        r = b - A @ x
+        rn = float(np.max(np.abs(r)))
+        if rn < rel_tol * bn:
+            break
+        dx = lu.solve(r)
+        x = x + dx
+    return x
+
+
+# ============================================================================
+# Anderson acceleration for the Picard fixed-point iteration.
+#
+# References:
+#   - Walker & Ni (2011) "Anderson acceleration for fixed-point iterations"
+#     SIAM J. Numer. Anal. 49(4), 1715-1735.
+#   - Lott et al. (2012) "An accelerated Picard method for nonlinear systems
+#     related to variably saturated flow." Adv. Water Resour. 38, 92-101.
+#
+# Implementation: Type-II Anderson with QR-updated normal equations.
+# Treats the Picard iterate as a fixed-point map h_{k+1} = G(h_k); when m
+# previous (h, G(h)) pairs are available, we extrapolate to a better next
+# iterate by solving a small least-squares problem over residuals.
+# ============================================================================
+
+class _AndersonState:
+    """Rolling buffer of (h_k, G(h_k)) pairs for Anderson acceleration."""
+
+    __slots__ = ("m_max", "h_hist", "g_hist")
+
+    def __init__(self, m_max: int = 3):
+        self.m_max = m_max
+        self.h_hist: list[NDArray[np.float64]] = []
+        self.g_hist: list[NDArray[np.float64]] = []
+
+    def reset(self) -> None:
+        self.h_hist.clear()
+        self.g_hist.clear()
+
+    def step(self, h_k: NDArray[np.float64],
+             g_k: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Push (h_k, g_k) and return the Anderson-accelerated next iterate.
+
+        On the first call returns g_k (plain Picard step). On subsequent
+        calls solves a least-squares problem over the last m residuals
+        F_i = G(h_i) - h_i to extrapolate. If the LSQ system is rank-
+        deficient (e.g. all residuals collinear at hyperextreme dry h),
+        we fall back to plain Picard for that step.
+        """
+        self.h_hist.append(h_k.copy())
+        self.g_hist.append(g_k.copy())
+        # Drop oldest pair if we exceed buffer
+        if len(self.h_hist) > self.m_max + 1:
+            self.h_hist.pop(0)
+            self.g_hist.pop(0)
+        m = len(self.h_hist) - 1
+        if m == 0:
+            return g_k.copy()
+        # Build dF (m × N) and dG (m × N) as row-differences of stacked arrays
+        F = np.stack(self.g_hist) - np.stack(self.h_hist)
+        G = np.stack(self.g_hist)
+        dF = np.diff(F, axis=0)
+        dG = np.diff(G, axis=0)
+        try:
+            alpha, *_ = np.linalg.lstsq(dF.T, F[-1], rcond=1e-10)
+        except np.linalg.LinAlgError:
+            return g_k.copy()
+        if not np.all(np.isfinite(alpha)):
+            return g_k.copy()
+        return G[-1] - dG.T @ alpha
+
+
+# ============================================================================
 # Main Picard iteration driver (mirrors WatFlow in WATFLOW2.FOR L3-151)
 # ============================================================================
 
@@ -440,6 +545,9 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
                      Sink: Optional[NDArray[np.float64]] = None,
                      P3: float = 0.0,
                      tables: Optional[tuple] = None,
+                     use_anderson: bool = False,
+                     anderson_m: int = 3,
+                     refine_solve: bool = False,
                      ) -> tuple[float, float, int, bool,
                                 NDArray[np.float64], NDArray[np.float64],
                                 NDArray[np.float64], NDArray[np.float64]]:
@@ -468,12 +576,15 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
     Con = Cap = None
     Q_intern = np.zeros(NumNP, np.float64)
     dt_current = dt
+    anderson = _AndersonState(m_max=anderson_m) if use_anderson else None
 
     while True:
         # Save state for restart on convergence failure
         hOld_iter = nodes.hOld.copy()
         Iter = 0
         Explic = False
+        if anderson is not None:
+            anderson.reset()
 
         while True:
             # SetMat
@@ -497,33 +608,49 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
             A_dir = dirich(A_csr, B_eff, nodes.Kode, nodes.hNew)
             # Solve
             try:
-                sol = spsolve(csc_matrix(A_dir), B_eff)
+                A_csc = csc_matrix(A_dir)
+                if refine_solve:
+                    sol = _solve_refined(A_csc, B_eff)
+                else:
+                    sol = spsolve(A_csc, B_eff)
             except RuntimeError:
                 # singular: stuck, force dt reduction
                 break
 
-            # Update hTemp ← old hNew (previous iterate), hNew ← solution
-            nodes.hTemp[:] = nodes.hNew
-            nodes.hNew[:]  = sol
-            np.clip(nodes.hNew, -1e10, 1e10, out=nodes.hNew)
+            # The Picard fixed-point map is G(h) = sol. Plain Picard sets
+            # h_{k+1} = sol; Anderson extrapolates using last m residuals.
+            h_prev = nodes.hNew.copy()                # x_k
+            if anderson is not None and not Explic:
+                h_next = anderson.step(h_prev, sol)   # Anderson update
+                np.clip(h_next, -1e10, 1e10, out=h_next)
+            else:
+                h_next = sol
+                np.clip(h_next, -1e10, 1e10, out=h_next)
+
+            nodes.hTemp[:] = h_prev      # previous iterate (for convergence test)
+            nodes.hNew[:]  = h_next
             Iter += 1
             time.ItCum += 1
             if Explic:
                 break
 
-            # Convergence test (per node, drop out as soon as one fails)
+            # Convergence test (per node, drop out as soon as one fails).
+            # When Anderson is on, use the *Picard* residual (sol - h_prev)
+            # for the test — the Anderson extrapolate is only the next
+            # iterate, not the convergence signal.
+            h_test_new = sol if anderson is not None else nodes.hNew
             ItCrit = True
             for i in range(NumNP):
                 M = nodes.MatNum[i] - 1
                 EpsTh = 0.0
                 EpsH = 0.0
-                if nodes.hTemp[i] < hSat[M] and nodes.hNew[i] < hSat[M]:
+                if h_prev[i] < hSat[M] and h_test_new[i] < hSat[M]:
                     Th_predict = (ThNew[i]
-                                  + Cap[i] * (nodes.hNew[i] - nodes.hTemp[i])
+                                  + Cap[i] * (h_test_new[i] - h_prev[i])
                                   / (thSat[M] - thR[M]) / nodes.Dxz[i])
                     EpsTh = abs(ThNew[i] - Th_predict)
                 else:
-                    EpsH = abs(nodes.hNew[i] - nodes.hTemp[i])
+                    EpsH = abs(h_test_new[i] - h_prev[i])
                 if EpsTh > cfg.TolTh or EpsH > cfg.TolH:
                     ItCrit = False
                     break
