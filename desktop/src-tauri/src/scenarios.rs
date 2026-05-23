@@ -39,11 +39,13 @@ pub fn list() -> Vec<Scenario> {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let kind = classify(&name, &p);
+            let (kind, input_path) = classify(&name, &p);
             out.push(Scenario {
                 name: name.clone(),
                 kind,
-                path: p.to_string_lossy().to_string(),
+                // path points at the actual directory the CLI should take
+                // as its --input-dir (which may be `<scenario>/inputs`).
+                path: input_path.to_string_lossy().into_owned(),
                 description: describe(&name),
             });
         }
@@ -60,20 +62,42 @@ pub fn list() -> Vec<Scenario> {
     out
 }
 
-fn classify(name: &str, p: &Path) -> String {
+// Returns (kind, input_dir_to_pass_to_CLI).
+fn classify(name: &str, p: &Path) -> (String, PathBuf) {
     let n = name.to_lowercase();
     if n.contains("3d") {
-        return "richards3d".into();
+        // 3D fixtures: we still record the inputs path for completeness
+        let inputs = p.join("inputs");
+        return ("richards3d".into(),
+                if inputs.is_dir() { inputs } else { p.to_path_buf() });
     }
-    // hydrus1d fixtures typically have SELECTOR.IN / PROFILE.DAT
-    if p.join("SELECTOR.IN").exists() || p.join("PROFILE.DAT").exists() {
-        return "hydrus1d".into();
+    // Some fixtures put files under <dir>/inputs/, some at <dir>/ root.
+    // Check both, case-insensitively, for HYDRUS-1D and SWMS_2D markers.
+    let candidates = [p.to_path_buf(), p.join("inputs")];
+    let h1d_markers = ["selector.in", "profile.dat"];
+    let s2d_markers = ["swms_2d.in", "grid.in"];
+    for c in &candidates {
+        if !c.is_dir() { continue; }
+        if has_any_file_case_insensitive(c, &h1d_markers) {
+            return ("hydrus1d".into(), c.clone());
+        }
+        if has_any_file_case_insensitive(c, &s2d_markers) {
+            return ("swms2d".into(), c.clone());
+        }
     }
-    // swms2d fixtures have SWMS_2D.IN / GRID.IN
-    if p.join("SWMS_2D.IN").exists() || p.join("GRID.IN").exists() {
-        return "swms2d".into();
+    ("unknown".into(), p.to_path_buf())
+}
+
+fn has_any_file_case_insensitive(dir: &Path, needles: &[&str]) -> bool {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            if needles.iter().any(|m| n == *m) {
+                return true;
+            }
+        }
     }
-    "unknown".into()
+    false
 }
 
 fn describe(name: &str) -> String {

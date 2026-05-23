@@ -23,6 +23,18 @@ pub fn list_scenarios() -> Vec<Scenario> {
     scenarios::list()
 }
 
+#[tauri::command]
+pub fn debug_log(text: String) -> Result<(), String> {
+    use std::io::Write;
+    let path = std::env::var("HYDRUS_GUI_DEBUG_LOG")
+        .unwrap_or_else(|_| "/tmp/gui_debug.log".to_string());
+    let mut f = std::fs::OpenOptions::new()
+        .create(true).append(true).open(&path)
+        .map_err(|e| e.to_string())?;
+    writeln!(f, "{}", text).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // --------------------------------------------------------------------
 // Python detection
 // --------------------------------------------------------------------
@@ -99,8 +111,18 @@ pub async fn start_simulation(
     cmd.arg("-u") // unbuffered stdout for live streaming
         .arg("-m")
         .arg(module);
-    if args.kind != "richards3d" {
-        cmd.arg(&input_dir).arg("-o").arg(&output_dir);
+    match args.kind.as_str() {
+        "hydrus1d" => {
+            cmd.arg("--input-dir").arg(&input_dir)
+                .arg("--output-dir").arg(&output_dir);
+        }
+        "swms2d" => {
+            cmd.arg(&input_dir).arg("-o").arg(&output_dir);
+        }
+        "richards3d" => {
+            // tests/validate_richards3d.py takes no args; just run it
+        }
+        _ => {}
     }
     if let Some(extra) = &args.extra_args {
         cmd.args(extra);

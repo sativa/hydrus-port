@@ -21,6 +21,24 @@ onMounted(async () => {
   } catch (e: any) {
     err.value = String(e);
   }
+  // Dev/E2E hook: VITE_AUTORUN=<name-substring> picks that scenario
+  // and fires Run automatically once python is ready.
+  const auto = (import.meta as any).env?.VITE_AUTORUN;
+  console.log("[autorun] VITE_AUTORUN =", auto,
+              "scenarios:", scenarios.value.length);
+  if (auto) {
+    const match =
+      scenarios.value.find((s) => s.name.includes(auto)) ??
+      scenarios.value[0];
+    console.log("[autorun] selected:", match?.name, match?.kind, match?.path);
+    if (match) {
+      selected.value = match.path;
+      setTimeout(() => {
+        console.log("[autorun] firing run() pythonReady=", props.pythonReady);
+        run();
+      }, 1500);
+    }
+  }
 });
 
 async function run() {

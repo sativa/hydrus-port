@@ -17,7 +17,35 @@ onMounted(async () => {
   } catch (e: any) {
     py_err.value = String(e);
   }
+  // E2E hook: VITE_AUTORUN forces an auto-run after mount + python detect.
+  const auto = (import.meta as any).env?.VITE_AUTORUN as string | undefined;
+  api.debugLog(`[autorun] VITE_AUTORUN raw = ${JSON.stringify(auto)}`).catch(()=>{});
+  if (auto) {
+    setTimeout(async () => {
+      try {
+        const ss = await api.listScenarios();
+        await api.debugLog(`[autorun] scenarios: ${ss.length}  names=${ss.map(s=>s.name).join(',')}`);
+        const match = ss.find((s) => s.name.includes(auto)) ?? ss[0];
+        if (!match) {
+          autorun_msg.value = "AUTORUN: no scenario";
+          await api.debugLog("[autorun] no scenario matched");
+          return;
+        }
+        autorun_msg.value = `AUTORUN: starting ${match.name}`;
+        await api.debugLog(`[autorun] picked ${match.name} kind=${match.kind} path=${match.path}`);
+        const j = await api.start({ kind: match.kind, input_dir: match.path });
+        autorun_msg.value = `AUTORUN: started job ${j.id}`;
+        await api.debugLog(`[autorun] started job ${j.id} status=${j.status}`);
+        job.value = j;
+      } catch (e: any) {
+        autorun_msg.value = `AUTORUN: ERR ${e}`;
+        try { await api.debugLog(`[autorun] EXCEPTION: ${e}`); } catch {}
+      }
+    }, 800);
+  }
 });
+
+const autorun_msg = ref<string>("");
 
 function onJobStarted(j: JobMeta) {
   job.value = j;
@@ -37,6 +65,9 @@ function onJobUpdated(j: JobMeta) {
         </span>
         <span v-else-if="py_err" class="status-failed">{{ py_err }}</span>
         <span v-else>detecting python…</span>
+        <span v-if="autorun_msg" style="margin-left: 10px; color: #d29922;">
+          [{{ autorun_msg }}]
+        </span>
       </div>
     </header>
 

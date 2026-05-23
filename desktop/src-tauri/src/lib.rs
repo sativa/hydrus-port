@@ -14,6 +14,7 @@ pub fn run() {
         .manage(JobRegistry::default())
         .invoke_handler(tauri::generate_handler![
             commands::list_scenarios,
+            commands::debug_log,
             commands::start_simulation,
             commands::stop_simulation,
             commands::list_jobs,

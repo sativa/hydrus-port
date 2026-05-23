@@ -45,6 +45,7 @@ export type LogLine = { stream: "stdout" | "stderr"; text: string };
 export const api = {
   listScenarios: () => invoke<Scenario[]>("list_scenarios"),
   detectPython: () => invoke<PythonInfo>("detect_python"),
+  debugLog: (text: string) => invoke<void>("debug_log", { text }),
 
   start: (args: {
     kind: string;

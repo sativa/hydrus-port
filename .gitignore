@@ -27,3 +27,8 @@ desktop/dist/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/src-tauri/Cargo.lock
+
+# Simulation outputs written next to fixtures (smoke-test artefacts)
+tests/fixtures/**/inputs/out/
+tests/fixtures/**/inputs/Out/
+tests/fixtures/**/out/
