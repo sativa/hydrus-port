@@ -53,17 +53,17 @@ Homepage = "https://github.com/zhangfeng/hydrus-port"
 Issues = "https://github.com/zhangfeng/hydrus-port/issues"
 
 [project.scripts]
-hydrus1d = "hydrus1d.hydrus:main"
-swms2d   = "swms2d.cli:main"
+hydrus = "hydrus_port.cli:main"
 hydrus-port-serve = "hydrus_port_server.app:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["hydrus1d", "swms2d", "hydrus_port_server"]
+packages = ["hydrus1d", "swms2d", "hydrus_port", "hydrus_port_server"]
 
 [tool.hatch.build.targets.sdist]
 include = [
     "hydrus1d/",
     "swms2d/",
+    "hydrus_port/",
     "hydrus_port_server/",
     "tests/",
     "DOCS/",

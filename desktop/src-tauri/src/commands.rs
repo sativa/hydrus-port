@@ -96,13 +96,12 @@ pub async fn start_simulation(
         .unwrap_or_else(|| input_dir.join("out"));
     std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
 
-    // Resolve python module to invoke. Both hydrus1d.hydrus and
-    // swms2d.cli expose a main() registered as a console script, but
-    // running `python -m` works without PATH installation.
-    let module = match args.kind.as_str() {
-        "hydrus1d" => "hydrus1d.hydrus",
-        "swms2d" => "swms2d.cli",
-        "richards3d" => "tests.validate_richards3d",
+    // All three sims dispatch through the unified `hydrus` CLI
+    // (hydrus_port.cli) via `python -u -m hydrus_port.cli {1d|2d|3d}`.
+    let subcmd = match args.kind.as_str() {
+        "hydrus1d" | "1d" => "1d",
+        "swms2d"   | "2d" => "2d",
+        "richards3d" | "3d" => "3d",
         other => return Err(format!("Unknown kind: {other}")),
     };
 
@@ -110,19 +109,10 @@ pub async fn start_simulation(
     let mut cmd = Command::new(&py);
     cmd.arg("-u") // unbuffered stdout for live streaming
         .arg("-m")
-        .arg(module);
-    match args.kind.as_str() {
-        "hydrus1d" => {
-            cmd.arg("--input-dir").arg(&input_dir)
-                .arg("--output-dir").arg(&output_dir);
-        }
-        "swms2d" => {
-            cmd.arg(&input_dir).arg("-o").arg(&output_dir);
-        }
-        "richards3d" => {
-            // tests/validate_richards3d.py takes no args; just run it
-        }
-        _ => {}
+        .arg("hydrus_port.cli")
+        .arg(subcmd);
+    if subcmd != "3d" {
+        cmd.arg(&input_dir).arg("-o").arg(&output_dir);
     }
     if let Some(extra) = &args.extra_args {
         cmd.args(extra);

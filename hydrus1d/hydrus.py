@@ -1268,35 +1268,3 @@ def run_simulation(
     )
     sim.run()
     return sim
-
-
-# ============================================================================
-# CLI entry point
-# ============================================================================
-
-def main():
-    """Command-line entry point."""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="HYDRUS-1D Python Port")
-    parser.add_argument("--input-dir", default=".", help="Input file directory")
-    parser.add_argument("--output-dir", default=".", help="Output file directory")
-    parser.add_argument("--selector", default="Selector.in", help="Selector file")
-    parser.add_argument("--profile", default="Profile.dat", help="Profile file")
-    parser.add_argument("--atmospheric", default="ATMOSPH.IN", help="Atmospheric file")
-    parser.add_argument("--meteo", default="Meteo.in", help="Meteo file")
-    
-    args = parser.parse_args()
-    
-    sim = run_simulation(
-        args.input_dir, args.output_dir,
-        args.selector, args.profile,
-        args.atmospheric, args.meteo,
-    )
-    
-    print(f"Simulation completed. Time: {sim.state.time.t}")
-    print(f"Output files in: {args.output_dir}")
-
-
-if __name__ == "__main__":
-    main()
