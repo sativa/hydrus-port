@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from hydrus1d.input import read_selector
+from hydrus1d.input import read_selector, read_profile
 from ..schema import (
     Scenario, ScenarioMeta, Units, Solver, HydraulicMaterial, TimeControl,
     FeddesRootUptake, SoluteTransport, Geometry1D, AtmosphericBC,
@@ -22,6 +22,39 @@ def _find(in_dir: Path, name: str) -> Path | None:
         if p.name.lower() == name.lower():
             return p
     return None
+
+
+# Block markers that may appear in HYDRUS-1D's Selector.in. D/E/F/G are
+# optional depending on solver flags; we don't model their interior in
+# the canonical schema yet, so we preserve them verbatim.
+_OPTIONAL_BLOCK_TAGS = ("BLOCK D", "BLOCK E", "BLOCK F", "BLOCK G", "BLOCK H")
+
+
+def _capture_optional_blocks(sel_path: Path) -> dict[str, str]:
+    """Read Selector.in and return raw text per BLOCK D/E/F/G/H section.
+    Each value includes the `*** BLOCK x ***` header line and continues
+    until the next `*** ...` header. Empty dict for vanilla scenarios."""
+    text = sel_path.read_text()
+    lines = text.splitlines()
+    out: dict[str, str] = {}
+    starts: list[tuple[int, str]] = []
+    for i, ln in enumerate(lines):
+        s = ln.lstrip()
+        if s.startswith("***"):
+            for tag in _OPTIONAL_BLOCK_TAGS:
+                if tag in s:
+                    starts.append((i, tag))
+                    break
+    # Append a sentinel for end of file
+    for idx, (i, tag) in enumerate(starts):
+        end = starts[idx + 1][0] if idx + 1 < len(starts) else len(lines)
+        # Stop one line before the END-OF-FILE marker if it's the last block
+        for j in range(i + 1, end):
+            if "END OF INPUT FILE" in lines[j]:
+                end = j
+                break
+        out[tag] = "\n".join(lines[i:end])
+    return out
 
 
 def load(input_dir: Path | str) -> Scenario:
@@ -90,13 +123,44 @@ def load(input_dir: Path | str) -> Scenario:
     )
 
     # --- Profile.dat → 1D geometry -----------------------------------
+    # Use H1D's own reader (handles both old and Pcp_File_Version=4 layouts).
+    # read_profile returns arrays with node 1 = BOTTOM (Fortran convention).
+    # Canonical convention: top first. Reverse before storing.
     geom = Geometry1D()
     if prof_path and prof_path.exists():
-        geom = _read_profile_dat(prof_path)
-    geom.kind = "1d"
-    # Ensure layer arrays have at least dummy values if Profile.dat omitted
+        prof = read_profile(str(prof_path), sel)
+        x   = prof["x"][::-1]
+        h   = prof["hOld"][::-1]
+        mat = prof["MatNum"][::-1]
+        lay = prof["LayNum"][::-1]
+        beta = prof["Beta"][::-1]
+        axz = prof["Ah"][::-1]
+        bxz = prof["AK"][::-1]
+        dxz = prof["ATh"][::-1]
+        geom = Geometry1D(
+            z=[float(v) for v in x],
+            initial_h=[float(v) for v in h],
+            mat_num=[int(v) for v in mat],
+            layer=[int(v) for v in lay],
+            beta=[float(v) for v in beta],
+            axz=[float(v) for v in axz],
+            bxz=[float(v) for v in bxz],
+            dxz=[float(v) for v in dxz],
+        )
+    # Ensure layer arrays have at least dummy values
     if not geom.layer:
         geom.layer = [1] * len(geom.z)
+
+    # --- preserve optional blocks (E/F/G/...) as raw text so they
+    # round-trip even when the canonical schema doesn't model them yet ---
+    raw_blocks = _capture_optional_blocks(sel_path)
+    # If lChem or lTemp is set, Profile.dat has extra columns (Te, Conc,
+    # Sorb) that the canonical Geometry1D doesn't model. Preserve the
+    # raw text so save() can re-emit it verbatim.
+    raw_profile = None
+    if sel.get("lChem", False) or sel.get("lTemp", False):
+        if prof_path and prof_path.exists():
+            raw_profile = prof_path.read_text()
 
     # --- legacy carryover (HYDRUS-1D-specific fields the editor doesn't expose) ---
     legacy = {
@@ -130,6 +194,8 @@ def load(input_dir: Path | str) -> Scenario:
         "h1d_tPrintInt": float(sel.get("tPrintInt", 1.0)),
         "h1d_lEnter":   bool(sel.get("lEnter", False)),
         "h1d_iVer":     int(sel.get("iVer", 4)),
+        "h1d_raw_blocks": raw_blocks,
+        "h1d_raw_profile": raw_profile,
         "h1d_CosAlpha": float(sel.get("CosAlf", 1.0)),
     }
 
@@ -152,56 +218,19 @@ def save(scenario: Scenario, output_dir: Path | str) -> None:
             f"hydrus1d adapter expects 1D geometry, got {scenario.dimension}"
         )
     _write_selector(scenario, out / "Selector.in")
-    _write_profile(scenario, out / "Profile.dat")
+    raw_prof = scenario.legacy_extras.get("h1d_raw_profile")
+    if raw_prof:
+        # Solute / heat scenarios: preserve original Profile.dat
+        # (extra Te/Conc/Sorb columns we don't model in the canonical
+        # geometry yet)
+        (out / "Profile.dat").write_text(raw_prof)
+    else:
+        _write_profile(scenario, out / "Profile.dat")
 
 
 # ----------------------------------------------------------------------
-# Profile.dat reader / writer
+# Profile.dat writer (reader is delegated to hydrus1d.input.read_profile)
 # ----------------------------------------------------------------------
-
-def _read_profile_dat(path: Path) -> Geometry1D:
-    """Parse HYDRUS-1D Profile.dat.
-
-    Layout:
-        line 1: NObs
-        lines 2..NObs+1: obs node setup (one per line)
-        next non-empty: "NumNP iCheck ... <column header tail>"
-        next NumNP lines: n x h Mat Lay Beta Axz Bxz Dxz [Temp]
-        terminator: 0
-    """
-    text = path.read_text().splitlines()
-    it = (ln for ln in text if ln.strip())
-    n_obs = int(next(it).split()[0])
-    # Skip n_obs obs lines
-    for _ in range(n_obs):
-        next(it, None)
-    # Next line has NumNP at the front
-    meta_line = next(it).split()
-    num_np = int(meta_line[0])
-    z: list[float] = []
-    h: list[float] = []
-    mat: list[int] = []
-    lay: list[int] = []
-    beta: list[float] = []
-    axz: list[float] = []
-    bxz: list[float] = []
-    dxz: list[float] = []
-    for _ in range(num_np):
-        toks = next(it).split()
-        # toks: n x h Mat Lay Beta Axz Bxz Dxz [Temp]
-        z.append(float(toks[1]))
-        h.append(float(toks[2]))
-        mat.append(int(toks[3]))
-        lay.append(int(toks[4]))
-        beta.append(float(toks[5]))
-        axz.append(float(toks[6]) if len(toks) > 6 else 1.0)
-        bxz.append(float(toks[7]) if len(toks) > 7 else 1.0)
-        dxz.append(float(toks[8]) if len(toks) > 8 else 1.0)
-    return Geometry1D(
-        z=z, initial_h=h, mat_num=mat, layer=lay,
-        beta=beta, axz=axz, bxz=bxz, dxz=dxz,
-    )
-
 
 def _write_profile(scenario: Scenario, path: Path) -> None:
     g = scenario.geometry  # Geometry1D
@@ -249,7 +278,10 @@ def _write_selector(scenario: Scenario, path: Path) -> None:
     mat = s.materials
     t = s.time
     L: list[str] = []
-    L.append(f"Pcp_File_Version={legacy.get('h1d_iVer', 4)}")
+    # Always emit v4 — H1D reader handles v4 robustly; older versions
+    # have subtly different block layouts that would force us to keep
+    # multiple writers in lockstep.
+    L.append("Pcp_File_Version=4")
     L.append("*** BLOCK A: BASIC INFORMATION *****************************************")
     L.append("Heading")
     L.append(s.meta.name)
@@ -342,6 +374,21 @@ def _write_selector(scenario: Scenario, path: Path) -> None:
         for i in range(0, len(t.print_times), 6):
             chunk = t.print_times[i:i + 6]
             L.append(" ".join(_fmt(v) for v in chunk))
+
+    # Emit raw optional blocks (D/E/F/G/H) preserved from the source
+    # file. These cover RootIn (lRoot), TempIn (lTemp), ChemIn (lChem),
+    # SinkIn (SinkF), and DualPorIn — we don't model them in the
+    # canonical schema yet but pass-through keeps scenarios runnable.
+    raw_blocks = legacy.get("h1d_raw_blocks") or {}
+    emit_d = cfg.root_uptake or legacy.get("h1d_lRoot", False)
+    emit_e = cfg.heat_transport
+    emit_f = cfg.solute_transport
+    emit_g = cfg.root_uptake     # SinkF in v4
+    for tag, should_emit in [("BLOCK D", emit_d), ("BLOCK E", emit_e),
+                              ("BLOCK F", emit_f), ("BLOCK G", emit_g),
+                              ("BLOCK H", True)]:
+        if should_emit and tag in raw_blocks:
+            L.append(raw_blocks[tag])
 
     L.append("*** END OF INPUT FILE 'SELECTOR.IN' ***")
     path.write_text("\n".join(L) + "\n")

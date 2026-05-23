@@ -1,7 +1,7 @@
 Pcp_File_Version=4
 *** BLOCK A: BASIC INFORMATION *****************************************
 Heading
-HYDRUS-1D run: field_backed
+Field-backed scenario A: HYDRUS-1D from real-site inputs
 LUnit  TUnit  MUnit
 cm   
 days 

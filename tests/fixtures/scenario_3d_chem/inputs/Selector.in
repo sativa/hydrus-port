@@ -1,7 +1,7 @@
 Pcp_File_Version=4
 *** BLOCK A: BASIC INFORMATION *****************************************
 Heading
-HYDRUS-1D run: scenario
+3D solute scenario (1D init): chem fixture for 3D demo
 LUnit  TUnit  MUnit
 cm   
 days 

@@ -1,7 +1,7 @@
 Pcp_File_Version=4
 *** BLOCK A: BASIC INFORMATION *****************************************
 Heading
-HYDRUS-1D run: what_if_evap
+Evaporation: variable atmospheric BC, 1m column
 LUnit  TUnit  MUnit
 cm   
 days 
