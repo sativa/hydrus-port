@@ -71,18 +71,19 @@ fn classify(name: &str, p: &Path) -> (String, PathBuf) {
         return ("richards3d".into(),
                 if inputs.is_dir() { inputs } else { p.to_path_buf() });
     }
-    // Some fixtures put files under <dir>/inputs/, some at <dir>/ root.
-    // Check both, case-insensitively, for HYDRUS-1D and SWMS_2D markers.
+    // Both HYDRUS-1D and SWMS_2D use Selector.in, so we can't classify
+    // by that alone. Distinguish via the unique markers:
+    //   SWMS_2D  → GRID.IN  (FE mesh; HYDRUS-1D has no mesh file)
+    //   HYDRUS-1D → Profile.dat
+    // Files may live at the scenario root or under `inputs/`.
     let candidates = [p.to_path_buf(), p.join("inputs")];
-    let h1d_markers = ["selector.in", "profile.dat"];
-    let s2d_markers = ["swms_2d.in", "grid.in"];
     for c in &candidates {
         if !c.is_dir() { continue; }
-        if has_any_file_case_insensitive(c, &h1d_markers) {
-            return ("hydrus1d".into(), c.clone());
-        }
-        if has_any_file_case_insensitive(c, &s2d_markers) {
+        if has_any_file_case_insensitive(c, &["grid.in"]) {
             return ("swms2d".into(), c.clone());
+        }
+        if has_any_file_case_insensitive(c, &["profile.dat"]) {
+            return ("hydrus1d".into(), c.clone());
         }
     }
     ("unknown".into(), p.to_path_buf())
