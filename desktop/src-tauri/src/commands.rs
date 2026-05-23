@@ -187,6 +187,90 @@ pub async fn start_simulation(
     Ok(meta)
 }
 
+// ---- Regression test runner -----------------------------------------
+// Spawns `python -u -m hydrus_port.cli test <target>` and reuses the
+// same JobRegistry / log+status event machinery as start_simulation so
+// the existing LogStream component renders progress unchanged.
+
+#[derive(serde::Deserialize)]
+pub struct StartTestArgs {
+    pub target: String, // "all" | "1d" | "2d" | "3d"
+}
+
+#[tauri::command]
+pub async fn start_test(
+    app: AppHandle,
+    registry: State<'_, JobRegistry>,
+    args: StartTestArgs,
+) -> Result<JobMeta, String> {
+    let valid = ["all", "1d", "2d", "3d"];
+    if !valid.contains(&args.target.as_str()) {
+        return Err(format!("invalid test target: {}", args.target));
+    }
+    let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+    let py = which_python().ok_or("python not found")?;
+    let root = scenarios::repo_root();
+    let mut cmd = Command::new(&py);
+    cmd.arg("-u")
+        .arg("-m")
+        .arg("hydrus_port.cli")
+        .arg("test")
+        .arg(&args.target)
+        .current_dir(&root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+
+    let meta = JobMeta {
+        id: id.clone(),
+        kind: format!("test:{}", args.target),
+        scenario: format!("hydrus test {}", args.target),
+        input_dir: root.to_string_lossy().into_owned(),
+        output_dir: root.to_string_lossy().into_owned(),
+        status: "running".into(),
+        exit_code: None,
+        started_at_ms: now_ms(),
+        finished_at_ms: None,
+    };
+    registry.insert(JobHandle { meta: meta.clone(), child: Some(child) });
+
+    spawn_line_forwarder(app.clone(), id.clone(), "stdout".into(), stdout);
+    spawn_line_forwarder(app.clone(), id.clone(), "stderr".into(), stderr);
+
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let reg_arc = registry.inner_arc();
+    tokio::spawn(async move {
+        let mut child = {
+            let mut guard = reg_arc.lock();
+            guard.get_mut(&id2).and_then(|h| h.child.take())
+        };
+        if let Some(ref mut c) = child {
+            let status = c.wait().await;
+            let (st, code) = match status {
+                Ok(s) => (
+                    if s.success() { "done".to_string() } else { "failed".to_string() },
+                    s.code(),
+                ),
+                Err(_) => ("failed".into(), None),
+            };
+            let mut guard = reg_arc.lock();
+            if let Some(h) = guard.get_mut(&id2) {
+                h.meta.status = st.clone();
+                h.meta.exit_code = code;
+                h.meta.finished_at_ms = Some(now_ms());
+            }
+            let _ = app2.emit(
+                &format!("job://{}/status", id2),
+                serde_json::json!({"status": st, "exit_code": code}),
+            );
+        }
+    });
+    Ok(meta)
+}
+
 #[tauri::command]
 pub async fn stop_simulation(
     registry: State<'_, JobRegistry>,

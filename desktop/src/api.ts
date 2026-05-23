@@ -54,6 +54,9 @@ export const api = {
     extra_args?: string[];
   }) => invoke<JobMeta>("start_simulation", { args }),
 
+  startTest: (target: "all" | "1d" | "2d" | "3d") =>
+    invoke<JobMeta>("start_test", { args: { target } }),
+
   stop: (id: string) => invoke<void>("stop_simulation", { id }),
   listJobs: () => invoke<JobMeta[]>("list_jobs"),
   getJob: (id: string) => invoke<JobMeta | null>("get_job", { id }),

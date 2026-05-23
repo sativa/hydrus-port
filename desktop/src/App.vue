@@ -5,6 +5,7 @@ import LogStream from "./components/LogStream.vue";
 import ProfilePlot from "./components/ProfilePlot.vue";
 import MeshViewer3D from "./components/MeshViewer3D.vue";
 import OutputBrowser from "./components/OutputBrowser.vue";
+import Regression from "./components/Regression.vue";
 import { api, type JobMeta, type PythonInfo } from "./api";
 
 const py = ref<PythonInfo | null>(null);
@@ -20,6 +21,23 @@ onMounted(async () => {
   // E2E hook: VITE_AUTORUN forces an auto-run after mount + python detect.
   const auto = (import.meta as any).env?.VITE_AUTORUN as string | undefined;
   api.debugLog(`[autorun] VITE_AUTORUN raw = ${JSON.stringify(auto)}`).catch(()=>{});
+  // Special sentinel: auto-fire the regression panel instead of a scenario.
+  if (auto && auto.startsWith("__test_")) {
+    const target = ((auto.replace("__test_", "").replace(/__$/, "") || "all") as "all" | "1d" | "2d" | "3d");
+    setTimeout(async () => {
+      try {
+        autorun_msg.value = `AUTORUN: hydrus test ${target}`;
+        await api.debugLog(`[autorun] firing test target=${target}`);
+        const j = await api.startTest(target);
+        autorun_msg.value = `AUTORUN: test job ${j.id}`;
+        job.value = j;
+      } catch (e: any) {
+        autorun_msg.value = `AUTORUN: ERR ${e}`;
+        try { await api.debugLog(`[autorun] test EXC ${e}`); } catch {}
+      }
+    }, 800);
+    return;
+  }
   if (auto) {
     setTimeout(async () => {
       try {
@@ -77,6 +95,7 @@ function onJobUpdated(j: JobMeta) {
           :python-ready="!!py"
           @job-started="onJobStarted"
         />
+        <Regression :external-job="job" @job-started="onJobStarted" />
         <OutputBrowser :job="job" />
       </section>
 

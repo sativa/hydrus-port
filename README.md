@@ -135,6 +135,12 @@ lists output files as they appear, plots any numeric `.OUT` / `.out`
 file (Plotly), and renders any `.vtu` written by the 3D solver
 (Three.js + inline VTU ASCII parser, time-slider over the series).
 
+A **Regression** panel on the left exposes the same `hydrus test`
+gate as a one-click button: streaming PASS/RUNNING/— per kind with
+wall-clock timing, plus an `OVERALL PASS / FAIL` badge.
+
+![GUI regression panel after Run all](DOCS/screenshots/gui_regression.png)
+
 The Rust side never touches Python directly — it just spawns the
 unified `hydrus` CLI and forwards events. That way the CLI stays the
 single source of truth for how simulations are launched.
