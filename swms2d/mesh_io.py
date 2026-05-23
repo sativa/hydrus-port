@@ -256,6 +256,129 @@ def snapshot_to_vtk(mesh: Mesh,
     m.write(str(path))
 
 
+# ============================================================================
+# 3D mesh IO — tetrahedral / hexahedral meshes
+# ============================================================================
+
+def read_mesh_3d(path: Path | str):
+    """Read a 3D mesh (tetrahedral or hexahedral) into a dict + skfem mesh.
+
+    Returns a dict with:
+        'skmesh' : scikit-fem MeshTet or MeshHex
+        'points' : (N, 3) coordinates
+        'cells'  : (NumEl, 4 or 8) connectivity
+        'boundary_nodes' : 0-based ids on the surface
+        'cell_type' : 'tetra' or 'hexahedron'
+    """
+    meshio = _require_meshio()
+    m = meshio.read(str(path))
+    if m.points.shape[1] != 3:
+        raise ValueError(f"Expected 3D mesh; got points shape {m.points.shape}")
+    cells_tet = None
+    cells_hex = None
+    for cb in m.cells:
+        if cb.type == "tetra":
+            cells_tet = cb.data
+        elif cb.type == "hexahedron":
+            cells_hex = cb.data
+    try:
+        import skfem
+    except ImportError as e:
+        raise ImportError("read_mesh_3d requires scikit-fem") from e
+    if cells_tet is not None:
+        skmesh = skfem.MeshTet(m.points.T, cells_tet.T.astype(np.int64))
+        cells = cells_tet
+        cell_type = 'tetra'
+    elif cells_hex is not None:
+        skmesh = skfem.MeshHex(m.points.T, cells_hex.T.astype(np.int64))
+        cells = cells_hex
+        cell_type = 'hexahedron'
+    else:
+        raise ValueError(f"No tetra/hex cells found in {path}")
+    # Detect surface (boundary) nodes via skfem's facets_satisfying
+    bnd = skmesh.boundary_nodes()
+    return dict(skmesh=skmesh, points=m.points.copy(),
+                cells=cells, boundary_nodes=bnd,
+                cell_type=cell_type)
+
+
+def make_box_mesh_3d(nx: int = 6, ny: int = 6, nz: int = 21,
+                     lx: float = 0.1, ly: float = 0.1, lz: float = 1.0,
+                     element: str = "tetra"):
+    """Build a structured 3D box mesh for synthetic tests.
+
+    Origin at (0, 0, 0); extents (lx, ly, lz). Z+ is up. For tetra,
+    each cube is split into 5 tetrahedra (Caendish layout). For
+    hexahedra, the box is a tensor-product grid.
+
+    Returns the same dict shape as `read_mesh_3d`.
+    """
+    try:
+        import skfem
+    except ImportError as e:
+        raise ImportError("make_box_mesh_3d requires scikit-fem") from e
+    x = np.linspace(0.0, lx, nx)
+    y = np.linspace(0.0, ly, ny)
+    z = np.linspace(0.0, lz, nz)
+    if element == "hex" or element == "hexahedron":
+        skmesh = skfem.MeshHex.init_tensor(x, y, z)
+    else:
+        # MeshTet has a tensor-product helper (subdivides each cube)
+        skmesh = skfem.MeshTet.init_tensor(x, y, z)
+    pts = skmesh.p.T   # (N, 3)
+    cells = skmesh.t.T  # (NumEl, ?)
+    bnd = skmesh.boundary_nodes()
+    return dict(skmesh=skmesh, points=pts.copy(), cells=cells.copy(),
+                boundary_nodes=bnd, cell_type=element)
+
+
+def snapshot_to_vtk_3d(skmesh,
+                       fields: Mapping[str, NDArray[np.float64]],
+                       path: Path | str) -> None:
+    """Write a 3D skfem mesh + node-centred scalar fields to VTU.
+
+    `fields[name]` must be (N,) arrays where N = skmesh.nvertices.
+    """
+    meshio = _require_meshio()
+    pts = skmesh.p.T   # (N, 3)
+    cells = []
+    # Detect element type from skmesh.t shape
+    nverts_per_cell = skmesh.t.shape[0]
+    if nverts_per_cell == 4:
+        cells = [("tetra", skmesh.t.T.astype(np.int32))]
+    elif nverts_per_cell == 8:
+        cells = [("hexahedron", skmesh.t.T.astype(np.int32))]
+    elif nverts_per_cell == 3:
+        cells = [("triangle", skmesh.t.T.astype(np.int32))]
+    elif nverts_per_cell == 4 and pts.shape[1] == 2:
+        cells = [("quad", skmesh.t.T.astype(np.int32))]
+    point_data = {name: np.asarray(arr).astype(np.float64)
+                  for name, arr in fields.items()}
+    m = meshio.Mesh(points=pts, cells=cells, point_data=point_data)
+    m.write(str(path))
+
+
+def timeseries_to_vtk_series_3d(skmesh,
+                                out_dir: Path | str,
+                                snapshots: list[tuple[float, dict]],
+                                prefix: str = "snap3d") -> Path:
+    """Write a sequence of 3D snapshots as a ParaView .pvd series."""
+    out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+    pvd_path = out / f"{prefix}.pvd"
+    pvd_lines = ['<?xml version="1.0"?>',
+                 '<VTKFile type="Collection" version="0.1" '
+                 'byte_order="LittleEndian">',
+                 '  <Collection>']
+    for i, (t, fields) in enumerate(snapshots):
+        fname = f"{prefix}_{i:04d}.vtu"
+        snapshot_to_vtk_3d(skmesh, fields, out / fname)
+        pvd_lines.append(f'    <DataSet timestep="{t}" group="" part="0" '
+                         f'file="{fname}"/>')
+    pvd_lines.extend(['  </Collection>', '</VTKFile>'])
+    pvd_path.write_text("\n".join(pvd_lines) + "\n")
+    return pvd_path
+
+
 def timeseries_to_vtk_series(mesh: Mesh,
                              out_dir: Path | str,
                              snapshots: list[tuple[float, dict]],
