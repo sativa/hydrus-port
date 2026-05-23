@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { api, type Scenario, type JobMeta } from "../api";
 
 const props = defineProps<{ pythonReady: boolean }>();
-const emit = defineEmits<{ (e: "job-started", j: JobMeta): void }>();
+const emit = defineEmits<{
+  (e: "job-started", j: JobMeta): void;
+  (e: "scenario-selected", path: string, kind: string): void;
+}>();
 
 const scenarios = ref<Scenario[]>([]);
 const selected = ref<string | null>(null);
@@ -13,6 +16,10 @@ const err = ref<string | null>(null);
 const current = computed(() =>
   scenarios.value.find((s) => s.path === selected.value) ?? null,
 );
+
+watch(current, (c) => {
+  if (c) emit("scenario-selected", c.path, c.kind);
+}, { immediate: true });
 
 onMounted(async () => {
   try {

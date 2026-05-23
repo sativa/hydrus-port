@@ -8,6 +8,7 @@ import OutputBrowser from "./components/OutputBrowser.vue";
 import Regression from "./components/Regression.vue";
 import Hovmoller1D from "./components/Hovmoller1D.vue";
 import MeshContour2D from "./components/MeshContour2D.vue";
+import ScenarioEditor from "./components/ScenarioEditor.vue";
 import { api, type JobMeta, type PythonInfo } from "./api";
 
 const py = ref<PythonInfo | null>(null);
@@ -22,6 +23,18 @@ const isTwoDimensional = computed(() => {
   const k = job.value?.kind ?? "";
   return k === "swms2d" || k === "2d";
 });
+
+const rightTab = ref<"3d" | "editor">("editor");
+const editorPath = ref<string | null>(null);
+function onScenarioSelected(path: string, kind: string) {
+  // Editor only makes sense for 1d/2d (SELECTOR.IN-based scenarios)
+  if (kind === "hydrus1d" || kind === "1d"
+      || kind === "swms2d" || kind === "2d") {
+    editorPath.value = path;
+  } else {
+    editorPath.value = null;
+  }
+}
 
 onMounted(async () => {
   try {
@@ -105,6 +118,7 @@ function onJobUpdated(j: JobMeta) {
         <ScenarioPicker
           :python-ready="!!py"
           @job-started="onJobStarted"
+          @scenario-selected="onScenarioSelected"
         />
         <Regression :external-job="job" @job-started="onJobStarted" />
         <OutputBrowser :job="job" />
@@ -118,7 +132,15 @@ function onJobUpdated(j: JobMeta) {
       </section>
 
       <section class="col-right">
-        <MeshViewer3D :job="job" />
+        <div class="tab-bar">
+          <button class="tab" :class="{active: rightTab === 'editor'}"
+                  @click="rightTab = 'editor'">Parameters</button>
+          <button class="tab" :class="{active: rightTab === '3d'}"
+                  @click="rightTab = '3d'">3D mesh</button>
+        </div>
+        <ScenarioEditor v-if="rightTab === 'editor'"
+                        :scenario-path="editorPath" />
+        <MeshViewer3D v-else :job="job" />
       </section>
     </main>
   </div>
@@ -158,4 +180,26 @@ section {
   gap: 10px;
   min-height: 0;
 }
+.tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: -2px;
+}
+.tab {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  cursor: pointer;
+  font-weight: 500;
+  border-radius: 0;
+}
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tab:hover { color: var(--text); }
 </style>

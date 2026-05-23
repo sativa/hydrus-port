@@ -16,6 +16,8 @@ pub fn run() {
             commands::list_scenarios,
             commands::debug_log,
             commands::start_test,
+            commands::read_scenario,
+            commands::write_scenario,
             commands::start_simulation,
             commands::stop_simulation,
             commands::list_jobs,

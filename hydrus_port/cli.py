@@ -228,13 +228,118 @@ def _run_test(args: argparse.Namespace) -> int:
     return 0 if overall_ok else 1
 
 
+# ----------------------------------------------------------------------
+# `hydrus scenario {read,write}` — JSON bridge for the GUI editor
+# ----------------------------------------------------------------------
+
+def _scenario_to_dict(cfg, materials, time, extras) -> dict:
+    import numpy as np
+    def _np(v):
+        if isinstance(v, np.ndarray):
+            return v.tolist()
+        return v
+    return {
+        "heading": extras.get("heading", ""),
+        "units":   extras.get("units", []),
+        "config": {
+            "KAT": cfg.KAT, "MaxIt": cfg.MaxIt,
+            "TolTh": cfg.TolTh, "TolH": cfg.TolH,
+            "lWat": cfg.lWat, "lChem": cfg.lChem,
+            "CheckF": cfg.CheckF, "ShortF": cfg.ShortF,
+            "FluxF": cfg.FluxF, "AtmInF": cfg.AtmInF,
+            "SeepF": cfg.SeepF, "FreeD": cfg.FreeD, "DrainF": cfg.DrainF,
+        },
+        "materials": [{
+            "thr": m.thr, "ths": m.ths, "tha": m.tha, "thm": m.thm,
+            "alpha": m.alpha, "n": m.n, "Ks": m.Ks,
+            "Kk": m.Kk, "thk": m.thk,
+        } for m in materials],
+        "time": {
+            "dt": time.dt, "dtMin": time.dtMin, "dtMaxW": time.dtMaxW,
+            "dMul": time.dMul, "dMul2": time.dMul2,
+        },
+        "NLay": extras.get("NLay"),
+        "hTab1": extras.get("hTab1"),
+        "hTabN": extras.get("hTabN"),
+        "NPar": extras.get("NPar"),
+        "TPrint": list(_np(extras.get("TPrint", []))),
+        "extras_raw": {
+            k: _np(v) for k, v in extras.items()
+            if k not in ("heading", "units", "TPrint",
+                          "NLay", "hTab1", "hTabN", "NPar")
+        },
+    }
+
+
+def _dict_to_scenario(d: dict):
+    """Inverse of _scenario_to_dict — reconstruct the structures parse_selector returns."""
+    import numpy as np
+    from swms2d.dataclasses import SimulationConfig, SoilMaterial, TimeControl
+    cfg = SimulationConfig()
+    for k, v in d.get("config", {}).items():
+        if hasattr(cfg, k):
+            setattr(cfg, k, v)
+    mats = [SoilMaterial(**m) for m in d.get("materials", [])]
+    t = TimeControl()
+    for k, v in d.get("time", {}).items():
+        if hasattr(t, k):
+            setattr(t, k, v)
+    extras = {
+        "heading": d.get("heading", ""),
+        "units":   d.get("units", []),
+        "TPrint":  np.array(d.get("TPrint", []), np.float64),
+        "NLay":    d.get("NLay"),
+        "hTab1":   d.get("hTab1"),
+        "hTabN":   d.get("hTabN"),
+        "NPar":    d.get("NPar"),
+    }
+    # Re-hydrate anything else that came through raw
+    raw = d.get("extras_raw", {})
+    for k, v in raw.items():
+        if isinstance(v, list) and v and isinstance(v[0], (int, float)) and k.startswith(("sink_", "drain_", "chem_")):
+            extras[k] = np.array(v, np.float64) if "POptm" in k or "ChPar" in k else v
+        else:
+            extras[k] = v
+    # Last derived: time.tMax from TPrint
+    if len(extras["TPrint"]):
+        t.tMax = float(extras["TPrint"][-1])
+    return cfg, mats, t, extras
+
+
+def _run_scenario(args: argparse.Namespace) -> int:
+    import json
+    from swms2d.input import parse_selector, write_selector
+    in_dir = Path(args.input_dir).expanduser().resolve()
+    sel_path = next(
+        (p for p in in_dir.iterdir() if p.name.lower() == "selector.in"),
+        in_dir / "SELECTOR.IN",
+    )
+    if args.action == "read":
+        cfg, mats, time, extras = parse_selector(sel_path)
+        print(json.dumps(_scenario_to_dict(cfg, mats, time, extras), indent=2))
+        return 0
+    elif args.action == "write":
+        # Read JSON from stdin or from --json file
+        if args.json:
+            payload = json.loads(Path(args.json).read_text())
+        else:
+            payload = json.loads(sys.stdin.read())
+        cfg, mats, time, extras = _dict_to_scenario(payload)
+        out = Path(args.out or sel_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_selector(cfg, mats, time, extras, out)
+        print(f"wrote {out}", file=sys.stderr)
+        return 0
+    raise SystemExit(f"unknown scenario action: {args.action}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="hydrus",
         description="HYDRUS-port unified entry: 1D / 2D / 3D Richards.",
     )
     sub = p.add_subparsers(dest="kind", required=True,
-                           metavar="{1d,2d,3d,test}")
+                           metavar="{1d,2d,3d,test,scenario}")
 
     # ----- 1d ---------------------------------------------------------
     p1d = sub.add_parser(
@@ -287,6 +392,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Which test to run (default: all)",
     )
     ptest.set_defaults(func=_run_test)
+
+    # ----- scenario ---------------------------------------------------
+    pscen = sub.add_parser(
+        "scenario",
+        help="Read or write a SELECTOR.IN as JSON (for the GUI editor)",
+    )
+    pscen.add_argument("action", choices=["read", "write"])
+    pscen.add_argument("input_dir", type=Path,
+                       help="Directory containing SELECTOR.IN")
+    pscen.add_argument("--json", type=Path, default=None,
+                       help="Path to JSON to write (else stdin)")
+    pscen.add_argument("--out", type=Path, default=None,
+                       help="Override output SELECTOR.IN path")
+    pscen.set_defaults(func=_run_scenario)
 
     return p
 

@@ -55,6 +55,29 @@ export type Swms2dField = {
   num_np: number;
 };
 
+export type Material = {
+  thr: number; ths: number; tha: number; thm: number;
+  alpha: number; n: number; Ks: number; Kk: number; thk: number;
+};
+export type Scenario_JSON = {
+  heading: string;
+  units: string[];
+  config: {
+    KAT: number; MaxIt: number; TolTh: number; TolH: number;
+    lWat: boolean; lChem: boolean; CheckF: boolean; ShortF: boolean;
+    FluxF: boolean; AtmInF: boolean; SeepF: boolean;
+    FreeD: boolean; DrainF: boolean;
+  };
+  materials: Material[];
+  time: {
+    dt: number; dtMin: number; dtMaxW: number;
+    dMul: number; dMul2: number;
+  };
+  NLay?: number; hTab1?: number; hTabN?: number; NPar?: number;
+  TPrint: number[];
+  extras_raw?: Record<string, any>;
+};
+
 export type OutputFile = {
   name: string;
   path: string;
@@ -94,6 +117,11 @@ export const api = {
     invoke<Swms2dMesh>("parse_swms2d_grid", { path }),
   parseSwms2dField: (path: string, numNp: number) =>
     invoke<Swms2dField>("parse_swms2d_field", { path, numNp }),
+
+  readScenario: (inputDir: string) =>
+    invoke<Scenario_JSON>("read_scenario", { inputDir }),
+  writeScenario: (inputDir: string, payload: Scenario_JSON) =>
+    invoke<void>("write_scenario", { inputDir, payload }),
   listVtuSeries: (dir: string) =>
     invoke<string[]>("list_vtu_series", { dir }),
   readBytes: (path: string) =>

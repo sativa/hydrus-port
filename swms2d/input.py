@@ -593,22 +593,32 @@ def _fmt_bool(b: bool) -> str:
     return " t" if b else " f"
 
 
+def _fmt_float(v: float) -> str:
+    """Format one float SWMS_2D-style. Integers get a trailing dot
+    ("60" → "60."), small-magnitude positives drop their leading zero
+    ("0.041" → ".041"). Avoids both Fortran-incompatible scientific
+    notation for small numbers and the double-dot bug from naively
+    suffixing every value."""
+    fv = float(v)
+    if not (fv == fv):    # NaN
+        return "0."
+    if fv == 0.0:
+        return "0."
+    # Integer-valued, reasonably small → "60."
+    if fv == int(fv) and abs(fv) < 1e7:
+        return f"{int(fv)}."
+    # General case
+    s = f"{fv:g}"
+    # Strip leading zero on small magnitudes ("0.041" → ".041")
+    if s.startswith("0.") and len(s) > 2:
+        s = s[1:]
+    elif s.startswith("-0.") and len(s) > 3:
+        s = "-" + s[2:]
+    return s
+
+
 def _fmt_floats(values, sep="   ") -> str:
-    """Format a sequence of floats. Use 'g' so 0.041 → '.041', matching
-    SELECTOR.IN's habit of dropping leading zeros."""
-    parts: list[str] = []
-    for v in values:
-        if v == int(v) and abs(v) < 1e7:
-            parts.append(f"{v:g}.")
-        else:
-            s = f"{v:g}"
-            # Drop leading zero on small magnitudes ("0.041" → ".041")
-            if s.startswith("0.") and len(s) > 2:
-                s = s[1:]
-            elif s.startswith("-0.") and len(s) > 3:
-                s = "-" + s[2:]
-            parts.append(s)
-    return sep.join(parts)
+    return sep.join(_fmt_float(v) for v in values)
 
 
 def write_selector(cfg: SimulationConfig,
@@ -627,7 +637,7 @@ def write_selector(cfg: SimulationConfig,
     L.append("Kat (0:horizontal plane, 1:axisymmetric vertical flow, 2:vertical plane)")
     L.append(f"  {cfg.KAT}")
     L.append("MaxIt   TolTh   TolH       (maximum number of iterations and tolerances)")
-    L.append(f"  {cfg.MaxIt}    {cfg.TolTh:g}   {cfg.TolH:g}")
+    L.append(f"  {cfg.MaxIt}    {_fmt_float(cfg.TolTh)}   {_fmt_float(cfg.TolH)}")
     L.append("lWat\tlChem\tChecF\tShortF  FluxF   AtmInF  SeepF  FreeD  DrainF")
     L.append("\t".join([
         _fmt_bool(cfg.lWat), _fmt_bool(cfg.lChem), _fmt_bool(cfg.CheckF),
@@ -638,7 +648,8 @@ def write_selector(cfg: SimulationConfig,
     L.append("*** BLOCK B: MATERIAL INFORMATION **************************************")
     L.append("NMat    NLay    hTab1   hTabN   NPar")
     L.append(f"  {len(materials)}      {extras.get('NLay', 1)}      "
-             f"{extras.get('hTab1', 0.001):g}    {extras.get('hTabN', 200.0):g}     "
+             f"{_fmt_float(extras.get('hTab1', 0.001))}    "
+             f"{_fmt_float(extras.get('hTabN', 200.0))}     "
              f"{extras.get('NPar', 9)}")
     L.append("thr     ths     tha     thm     Alfa    n       Ks      Kk      thk")
     for m in materials:
@@ -650,14 +661,14 @@ def write_selector(cfg: SimulationConfig,
     L.append("*** BLOCK C: TIME INFORMATION ******************************************")
     L.append("dt      dtMin   dtMax   DMul    DMul2   MPL")
     tprint = extras.get("TPrint", [])
-    L.append(f"  {time.dt:g}.    {time.dtMin:g}     {time.dtMaxW:g}.     "
-             f"{time.dMul:g}     {time.dMul2:g}     {len(tprint)}")
+    L.append(f"  {_fmt_float(time.dt)}    {_fmt_float(time.dtMin)}     "
+             f"{_fmt_float(time.dtMaxW)}     {_fmt_float(time.dMul)}     "
+             f"{_fmt_float(time.dMul2)}     {len(tprint)}")
     L.append("TPrint(1),TPrint(2),...,TPrint(MPL)                   (print-time array)")
     if len(tprint) > 0:
-        # Write in groups of up to 6 per line (matches typical layout)
         for i in range(0, len(tprint), 6):
             chunk = tprint[i:i + 6]
-            L.append(" " + " ".join(f"{float(t):g}" for t in chunk))
+            L.append(" " + " ".join(_fmt_float(t) for t in chunk))
 
     # BLOCK D — sink (only if any sink keys present)
     if "sink_P0" in extras:
@@ -682,8 +693,27 @@ def write_selector(cfg: SimulationConfig,
         for face_nodes in extras["NP"]:
             L.append("  " + "  ".join(str(n) for n in face_nodes))
 
-    # BLOCK F — drainage (only if DrainF; full output left as TODO for parity)
-    # BLOCK G — solute (only if lChem; full output left as TODO for parity)
+    # BLOCK F — drainage (only if DrainF; not exercised by EX1-4, stub only)
+
+    # BLOCK G — solute transport (only if lChem). EX4 needs this.
+    if cfg.lChem and "chem_ChPar" in extras:
+        L.append("*** BLOCK G: SOLUTE TRANSPORT INFORMATION ******************************")
+        L.append("Epsi\tlUpW    lArtD   PeCr")
+        L.append(
+            _fmt_float(extras["chem_epsi"]) + "\t"
+            + _fmt_bool(extras["chem_lUpW"]).strip() + "       "
+            + _fmt_bool(extras["chem_lArtD"]).strip() + "       "
+            + _fmt_float(extras["chem_PeCr"])
+        )
+        L.append("Bulk.d. Difus.\t  Disper.    Adsorp.   SinkL1\t SinkS1   SinkL0 SinkS0")
+        chpar = extras["chem_ChPar"]  # shape (9, NMat)
+        for m_idx in range(chpar.shape[1]):
+            row = [chpar[k, m_idx] for k in range(chpar.shape[0])]
+            L.append(_fmt_floats(row, sep="\t"))
+        # Remaining KodCB, cBound, tPulse lines: parse_selector stashed
+        # them as raw lines because NumBP wasn't known then. Echo verbatim.
+        for ln in extras.get("chem_remaining_lines", []):
+            L.append(ln)
 
     L.append("*** END OF INPUT FILE 'SELECTOR.IN' ************************************")
     path.write_text("\n".join(L) + "\n")

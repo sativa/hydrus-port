@@ -29,6 +29,52 @@ pub fn list_scenarios() -> Vec<Scenario> {
     scenarios::list()
 }
 
+// ---- Scenario JSON bridge (parameter editor) ------------------------
+
+#[tauri::command]
+pub async fn read_scenario(input_dir: String) -> Result<serde_json::Value, String> {
+    let py = which_python().ok_or("python not found")?;
+    let out = Command::new(&py)
+        .arg("-m").arg("hydrus_port.cli")
+        .arg("scenario").arg("read").arg(&input_dir)
+        .current_dir(scenarios::repo_root())
+        .output().await
+        .map_err(|e| format!("spawn failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("hydrus scenario read failed: {}",
+                           String::from_utf8_lossy(&out.stderr)));
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn write_scenario(input_dir: String, payload: serde_json::Value)
+    -> Result<(), String>
+{
+    use tokio::io::AsyncWriteExt;
+    let py = which_python().ok_or("python not found")?;
+    let mut child = Command::new(&py)
+        .arg("-m").arg("hydrus_port.cli")
+        .arg("scenario").arg("write").arg(&input_dir)
+        .current_dir(scenarios::repo_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let body = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
+        stdin.write_all(&body).await.map_err(|e| e.to_string())?;
+        // drop closes stdin so the child sees EOF
+    }
+    let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("hydrus scenario write failed: {}",
+                           String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn debug_log(text: String) -> Result<(), String> {
     use std::io::Write;

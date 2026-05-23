@@ -110,14 +110,8 @@ def round_trip(in_dir: Path) -> tuple[bool, list[str]]:
 
 def main():
     fixtures = ROOT / "tests" / "fixtures"
-    # EX1 is required (no atmospheric / sink / solute, exercises blocks
-    # A/B/C/E only — full coverage of the writer's current scope).
-    # EX2-4 add atmospheric BC, sink, solute — writer support for those
-    # blocks is TODO; expect XFAIL until extended.
-    required = ["EX1"]
-    extended = ["EX2", "EX3", "EX4"]
     overall = True
-    for name in required:
+    for name in ("EX1", "EX2", "EX3", "EX4"):
         in_dir = fixtures / name / "inputs"
         if not in_dir.exists():
             print(f"SKIP {name}: no fixture")
@@ -126,27 +120,13 @@ def main():
             ok, diffs = round_trip(in_dir)
         except Exception as e:
             ok, diffs = False, [f"exception: {e!r}"]
-        print(f"[{'PASS' if ok else 'FAIL'}] {name} (required)")
+        print(f"[{'PASS' if ok else 'FAIL'}] {name}")
         if not ok:
             overall = False
             for d in diffs[:20]:
                 print(f"  {d}")
             if len(diffs) > 20:
                 print(f"  ... ({len(diffs) - 20} more)")
-    for name in extended:
-        in_dir = fixtures / name / "inputs"
-        if not in_dir.exists():
-            continue
-        try:
-            ok, diffs = round_trip(in_dir)
-            tag = "PASS" if ok else "XFAIL"
-        except Exception as e:
-            ok = False; tag = "XFAIL"
-            diffs = [f"exception: {e!r}"]
-        print(f"[{tag}] {name} (extended; writer doesn't cover all blocks yet)")
-        if not ok and tag == "XFAIL":
-            for d in diffs[:5]:
-                print(f"  hint: {d}")
     print("\nOVERALL:", "PASS" if overall else "FAIL")
     return 0 if overall else 1
 
