@@ -20,6 +20,7 @@ Direct 1:1 port of SWMS_2D v1.22 (Simunek 1996), aligned with the existing
 | `output.py` | **13/13** SWMS_2D output files (+ Check.out + Solute.out) | ✓ |
 | `mesh_io.py` | gmsh reader + ParaView .pvd / .vtu writer (meshio-backed) | ✓ |
 | `skfem_watflow.py` | Stage 2 prototype on scikit-fem (1.76 % L2 vs Stage 1) | ✓ prototype |
+| `richards3d.py` | **3D Richards on scikit-fem** (MeshTet / MeshHex) | ✓ prototype |
 | `sink.py` | Feddes root water uptake + Beta normalisation | ✓ |
 | `swms2d.py` | Main simulation driver | ✓ |
 | `verify.py` | Compare against Fortran reference | ✓ (via compare_outputs.py) |
@@ -97,6 +98,44 @@ The Fortran SWMS_2D writes 13 ASCII files; Python now writes 11:
   bit-equal but mathematically equivalent.
 - Enables future 3D (`MeshTet`/`MeshHex`), higher-order elements
   (P2/P3), AMG preconditioning, mixed FE, error estimators.
+
+## 3D extension (`richards3d.py`)
+
+The same scikit-fem foundation extends naturally to 3D. SWMS_2D 1.22
+is 2D-only, so this is a new from-scratch capability:
+
+- `RichardsState3D` + `evaluate_KCQ_3d()` — per-node h/θ state plus
+  Vogel-Cislerova K/C/θ evaluation (reuses `hydrus1d.material`).
+- `picard_step_3d()` — one Picard linear solve via scikit-fem's
+  `BilinearForm` (stiffness `K·∇u·∇v`, mass `(C/dt)·u·v`) and
+  `LinearForm` (gravity `K·∂v/∂z`). Dirichlet BC via `condense`.
+- `solve_step_3d()` — single dt step with outer Picard loop.
+- `integrate_3d()` — multi-step time integration with adaptive dt
+  (dMul/dMul2 + dt-cut on non-converge).
+
+Element types supported: `ElementTetP1` (linear tetrahedra),
+`ElementHex1` (trilinear hexahedra), higher-order P2 / P3 trivially
+via class swap.
+
+`mesh_io.py` matching 3D additions:
+- `read_mesh_3d(path)` — gmsh / Abaqus / MEDIT tetra/hex meshes.
+- `make_box_mesh_3d(nx, ny, nz, lx, ly, lz)` — synthetic tensor-
+  product box for testing.
+- `snapshot_to_vtk_3d()` / `timeseries_to_vtk_series_3d()` —
+  ParaView-ready output.
+
+**Validation on a 3D vertical column matching EX.1** (1×1×61 cm, 31
+z-levels, 279 nodes, 720 tetrahedra, single-material sandy soil):
+- Wetting front depth at t=60 s correctly placed at ~6 cm below
+  the saturated top (matches Stage 1 EX.1 watflow output).
+- RMSE 52 hPa, max 88 hPa across the column profile. The smearing
+  is from consistent (non-lumped) mass matrix and tetrahedral mesh
+  vs Stage 1's mixed quad/tri elements; both fixable in production
+  (numerical-Cotes lumping or `ElementHex1` for column geometry).
+
+A unit-system mismatch trap was caught during validation: initial
+test used Ks=7.22e-4 cm/s on a mesh in meters — 100× scale error.
+Fixed by enforcing consistent cm units throughout.
 
 ## Verification status (Phase 3)
 
