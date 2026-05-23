@@ -26,6 +26,8 @@ pub fn run() {
             commands::parse_obs_node,
             commands::parse_node_inf,
             commands::parse_nod_inf_series,
+            commands::parse_swms2d_grid,
+            commands::parse_swms2d_field,
             commands::list_vtu_series,
             commands::detect_python,
         ])

@@ -7,6 +7,7 @@ import MeshViewer3D from "./components/MeshViewer3D.vue";
 import OutputBrowser from "./components/OutputBrowser.vue";
 import Regression from "./components/Regression.vue";
 import Hovmoller1D from "./components/Hovmoller1D.vue";
+import MeshContour2D from "./components/MeshContour2D.vue";
 import { api, type JobMeta, type PythonInfo } from "./api";
 
 const py = ref<PythonInfo | null>(null);
@@ -16,6 +17,10 @@ const job = ref<JobMeta | null>(null);
 const isOneDimensional = computed(() => {
   const k = job.value?.kind ?? "";
   return k === "hydrus1d" || k === "1d";
+});
+const isTwoDimensional = computed(() => {
+  const k = job.value?.kind ?? "";
+  return k === "swms2d" || k === "2d";
 });
 
 onMounted(async () => {
@@ -107,6 +112,7 @@ function onJobUpdated(j: JobMeta) {
 
       <section class="col-mid">
         <Hovmoller1D v-if="isOneDimensional" :job="job" />
+        <MeshContour2D v-else-if="isTwoDimensional" :job="job" />
         <ProfilePlot v-else :job="job" />
         <LogStream :job="job" @job-status="onJobUpdated" />
       </section>

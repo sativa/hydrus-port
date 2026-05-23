@@ -163,3 +163,173 @@ pub fn parse_nod_inf(path: &Path) -> Result<NodInfSeries, String> {
 
     Ok(NodInfSeries { times, depths, vars, var_names })
 }
+
+
+// --------------------------------------------------------------------
+// SWMS_2D GRID.IN — node coordinates + quad/tri element connectivity.
+// We re-emit the connectivity as a flat triangle list (each quad
+// splits into two triangles, ABC / ACD) so the WebGL renderer never
+// has to special-case mesh kind.
+// --------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct Swms2dMesh {
+    pub nodes_x: Vec<f64>,        // 0-indexed; node N corresponds to GRID.IN node N+1
+    pub nodes_z: Vec<f64>,
+    pub triangles: Vec<[u32; 3]>, // 0-indexed
+    pub num_np: usize,
+    pub num_el: usize,
+}
+
+pub fn parse_swms2d_grid(path: &Path) -> Result<Swms2dMesh, String> {
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+
+    let mut section = "";          // "nodes" | "elements" | other
+    let mut num_np: usize = 0;
+    let mut num_el: usize = 0;
+    let mut want_meta = true;      // read NumNP/NumEl/... line on first numeric line
+    let mut nodes_x: Vec<f64> = Vec::new();
+    let mut nodes_z: Vec<f64> = Vec::new();
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+
+    for line in text.lines() {
+        let s = line.trim();
+        let upper = s.to_uppercase();
+        if upper.contains("BLOCK H") || upper.contains("NODAL INFORMATION") {
+            section = "nodes"; want_meta = true; continue;
+        }
+        if upper.contains("BLOCK I") || upper.contains("ELEMENT INFORMATION") {
+            section = "elements"; continue;
+        }
+        if upper.contains("BLOCK J") || upper.contains("BOUNDARY GEOMETRY") {
+            section = "boundary"; continue;
+        }
+        if s.is_empty() || s.starts_with("***") {
+            continue;
+        }
+        let toks: Vec<&str> = s.split_whitespace().collect();
+        let first_num = toks.first().and_then(|t| t.parse::<i64>().ok());
+        if first_num.is_none() {
+            continue;   // header rows ("n Code x z ...")
+        }
+        match section {
+            "nodes" => {
+                if want_meta && toks.len() >= 2 {
+                    // First numeric line is "NumNP NumEl IJ NumBP NObs"
+                    num_np = toks[0].parse().unwrap_or(0);
+                    num_el = toks.get(1).and_then(|t| t.parse().ok()).unwrap_or(0);
+                    want_meta = false;
+                    continue;
+                }
+                // Node row: n Code x z h Conc Q M B Axz Bxz Dxz
+                if toks.len() >= 4 {
+                    let x: f64 = toks[2].parse().unwrap_or(f64::NAN);
+                    let z: f64 = toks[3].parse().unwrap_or(f64::NAN);
+                    nodes_x.push(x);
+                    nodes_z.push(z);
+                }
+            }
+            "elements" => {
+                // Element row: e i j k l Angle Aniz1 Aniz2 LayNum
+                if toks.len() >= 5 {
+                    let i: u32 = toks[1].parse::<u32>().unwrap_or(0);
+                    let j: u32 = toks[2].parse::<u32>().unwrap_or(0);
+                    let k: u32 = toks[3].parse::<u32>().unwrap_or(0);
+                    let l: u32 = toks[4].parse::<u32>().unwrap_or(0);
+                    if i == 0 || j == 0 || k == 0 {
+                        continue;
+                    }
+                    let to_idx = |n: u32| (n - 1) as u32;
+                    if l == 0 || l == i {
+                        // triangle
+                        tris.push([to_idx(i), to_idx(j), to_idx(k)]);
+                    } else {
+                        // quad → two triangles (i,j,k) and (i,k,l)
+                        tris.push([to_idx(i), to_idx(j), to_idx(k)]);
+                        tris.push([to_idx(i), to_idx(k), to_idx(l)]);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Swms2dMesh {
+        nodes_x, nodes_z, triangles: tris,
+        num_np, num_el,
+    })
+}
+
+
+// --------------------------------------------------------------------
+// SWMS_2D h.out / th.out — per-node scalar at each saved time. The
+// format groups two consecutive odd/even nodes per row to save width:
+//     n   x(n)   z(n)   h(n)   h(n+1)
+// We read both columns and store as a flat [num_np] vector per snapshot.
+// --------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct Swms2dField {
+    pub times: Vec<f64>,
+    pub values: Vec<Vec<f64>>,   // n_t × num_np
+    pub num_np: usize,
+}
+
+pub fn parse_swms2d_field(path: &Path, num_np: usize) -> Result<Swms2dField, String> {
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut times: Vec<f64> = Vec::new();
+    let mut snaps: Vec<Vec<f64>> = Vec::new();
+    let mut cur: Option<Vec<f64>> = None;
+    let mut current_t: Option<f64> = None;
+
+    for line in text.lines() {
+        let s = line.trim();
+        if s.is_empty() {
+            continue;
+        }
+        if let Some(rest) = s.strip_prefix("Time") {
+            // Match: "Time  ***      0.0000 ***"
+            if let Some(t_str) = rest.split('*').find(|s| !s.trim().is_empty()) {
+                let tv: f64 = t_str.trim().parse().unwrap_or(f64::NAN);
+                if let Some(prev) = cur.take() {
+                    snaps.push(prev);
+                }
+                current_t = Some(tv);
+                times.push(tv);
+                cur = Some(vec![f64::NAN; num_np]);
+                continue;
+            }
+        }
+        let first = s.split_whitespace().next().unwrap_or("");
+        if first.parse::<i64>().is_err() {
+            continue;
+        }
+        if cur.is_none() {
+            continue;
+        }
+        let toks: Vec<&str> = s.split_whitespace().collect();
+        // Expect: n x(n) z(n) h(n) h(n+1)  → assign to node n-1 and n
+        if toks.len() < 5 {
+            continue;
+        }
+        let n: usize = toks[0].parse::<usize>().unwrap_or(0);
+        let v1: f64 = toks[3].parse().unwrap_or(f64::NAN);
+        let v2: f64 = toks[4].parse().unwrap_or(f64::NAN);
+        if n >= 1 && n <= num_np {
+            cur.as_mut().unwrap()[n - 1] = v1;
+            if n < num_np {
+                cur.as_mut().unwrap()[n] = v2;
+            }
+        }
+    }
+    if let Some(prev) = cur {
+        snaps.push(prev);
+    }
+    // Drop the leading "current_t prelude" if we accidentally bumped
+    if times.len() > snaps.len() {
+        times.truncate(snaps.len());
+    }
+    let _ = current_t;
+    Ok(Swms2dField {
+        times, values: snaps, num_np,
+    })
+}

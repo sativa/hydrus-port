@@ -1,8 +1,13 @@
 // Tauri command handlers invoked from the Vue frontend.
 
 use crate::jobs::{JobHandle, JobMeta, JobRegistry};
-use crate::parse::{parse_nod_inf as parse_nod_inf_impl, read_numeric_table,
-                   NodInfSeries, Series};
+use crate::parse::{
+    parse_nod_inf as parse_nod_inf_impl,
+    parse_swms2d_grid as parse_swms2d_grid_impl,
+    parse_swms2d_field as parse_swms2d_field_impl,
+    read_numeric_table,
+    NodInfSeries, Series, Swms2dField, Swms2dMesh,
+};
 use crate::scenarios::{self, Scenario};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -351,6 +356,16 @@ pub fn parse_node_inf(path: String) -> Result<Series, String> {
 #[tauri::command]
 pub fn parse_nod_inf_series(path: String) -> Result<NodInfSeries, String> {
     parse_nod_inf_impl(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+pub fn parse_swms2d_grid(path: String) -> Result<Swms2dMesh, String> {
+    parse_swms2d_grid_impl(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+pub fn parse_swms2d_field(path: String, num_np: usize) -> Result<Swms2dField, String> {
+    parse_swms2d_field_impl(std::path::Path::new(&path), num_np)
 }
 
 #[tauri::command]

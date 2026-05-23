@@ -41,6 +41,20 @@ export type NodInfSeries = {
   var_names: string[];
 };
 
+export type Swms2dMesh = {
+  nodes_x: number[];
+  nodes_z: number[];
+  triangles: [number, number, number][];      // 0-indexed
+  num_np: number;
+  num_el: number;
+};
+
+export type Swms2dField = {
+  times: number[];
+  values: number[][];                         // n_t × num_np
+  num_np: number;
+};
+
 export type OutputFile = {
   name: string;
   path: string;
@@ -76,6 +90,10 @@ export const api = {
     invoke<Series>("parse_obs_node", { path }),
   parseNodInf: (path: string) =>
     invoke<NodInfSeries>("parse_nod_inf_series", { path }),
+  parseSwms2dGrid: (path: string) =>
+    invoke<Swms2dMesh>("parse_swms2d_grid", { path }),
+  parseSwms2dField: (path: string, numNp: number) =>
+    invoke<Swms2dField>("parse_swms2d_field", { path, numNp }),
   listVtuSeries: (dir: string) =>
     invoke<string[]>("list_vtu_series", { dir }),
   readBytes: (path: string) =>
