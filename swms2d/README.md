@@ -14,9 +14,9 @@ Direct 1:1 port of SWMS_2D v1.22 (Simunek 1996), aligned with the existing
 | `material.py` | VG-Mualem + Vogel-Cislerova adapter for hydrus1d.material | ✓ (see note) |
 | `watflow.py` | 2D Richards Galerkin FE solver | ✓ — EX.1 matches Fortran ≤2 hPa |
 | `solute.py` | 2D ADE solver with reaction chain (Crank-Nicholson) | ✓ |
-| `temper.py` | Heat transport (from-scratch 2D extension; verified vs analytical) | ✓ |
-| `hysteresis.py` | Scott (1983) drying/wetting scanning curves | ✓ (standalone) |
-| `drain.py` | Subsurface drain BC + Vimoke-Taylor K reduction | ✓ |
+| `temper.py` | Heat transport (driver-integrated, lTemp flag) | ✓ |
+| `hysteresis.py` | Scott (1983) scanning curves (driver-integrated, lHyst flag) | ✓ |
+| `drain.py` | Subsurface drain BC (driver-integrated; activates on saturation) | ✓ |
 | `output.py` | **13/13** SWMS_2D output files (+ Check.out + Solute.out) | ✓ |
 | `mesh_io.py` | gmsh reader + ParaView .pvd / .vtu writer (meshio-backed) | ✓ |
 | `skfem_watflow.py` | Stage 2 prototype on scikit-fem (1.76 % L2 vs Stage 1) | ✓ prototype |
@@ -46,9 +46,44 @@ Three modules **extend** the original Fortran feature set:
   rarely-used `DrainF` branch (none of EX.1-4 exercise it); smoke
   test verifies all four state transitions.
 
-All three modules are standalone; the main driver does not yet
-auto-integrate heat / hysteresis / drains into the time loop (each
-is invoked explicitly by user code or future driver flags).
+All three are now **driver-integrated** via opt-in flags
+`cfg.lTemp`, `cfg.lHyst`, `cfg.DrainF` (all default False so EX.1-4
+remain numerically identical to the Fortran reference).
+
+### How to enable each
+
+**DrainF** (subsurface drain):
+```python
+sim.cfg.DrainF = True
+sim.drain_NDr = 1
+sim.drain_ND = np.array([drain_node_id], np.int32)      # 1-based
+sim.mesh.nodes.Kode[drain_node_id - 1] = -5             # init inactive
+apply_vimoke_taylor(sim.mesh, NDr, NED, EfDim, KElDr, DrCorr=1.0)
+sim.run()
+```
+
+**Hysteresis** (Scott 1983 dual-curve):
+```python
+sim.cfg.lHyst = True
+wetting_materials = [SoilMaterial(..., alpha=alpha_d * 2, ...)]   # per material
+sim.hyst_materials = [HysteresisMaterial(d, w)
+                      for d, w in zip(sim.materials, wetting_materials)]
+sim.hyst_state = init_state(sim.mesh.NumNP, default_branch=IHYST_DRYING)
+sim.run()
+```
+
+**Heat transport** (couples to watflow's Vx/Vz):
+```python
+sim.cfg.lTemp = True
+sim.Temp = np.full(N, 15.0)         # initial T
+sim.TempOld = sim.Temp.copy()
+sim.ParT = default_ParT(NMat=1, ...)
+sim.KodeT = np.zeros(N, np.int32)   # +1=Dirichlet T, -1=flux
+sim.T_bc  = np.zeros(N, np.float64)
+sim.KodeT[top_nodes] = 1; sim.T_bc[top_nodes] = 35.0   # heated inflow
+sim.temp_writer = TempOutWriter(...)   # if enabled post-init
+sim.run()                              # produces Temp.out
+```
 
 ## Output files (11 of 13 implemented)
 
