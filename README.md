@@ -34,6 +34,8 @@ hydrus 1d   <input_dir> [-o OUT]              # HYDRUS-1D
 hydrus 2d   <input_dir> [-o OUT] [...]        # SWMS_2D
 hydrus 3d   [<input_dir>] [-o OUT]            # 3D Richards (no args → demo)
 hydrus test [1d|2d|3d|roundtrip|all]          # smoke-test one or all paths
+hydrus scenario read  <input_dir>             # SELECTOR.IN  → JSON  (stdout)
+hydrus scenario write <input_dir> [--json F]  # JSON (stdin/file) → SELECTOR.IN
 ```
 
 `-o` defaults to `<input_dir>/out`. Each subcommand only exposes the
@@ -142,11 +144,42 @@ npm run tauri:dev                    # dev: HMR + Tauri window
 npm run tauri:build                  # release: .app / .dmg
 ```
 
-The GUI lists every fixture under `tests/fixtures/`, runs `hydrus
-<kind> <path>` as a subprocess, streams stdout to a live log panel,
-lists output files as they appear, plots any numeric `.OUT` / `.out`
-file (Plotly), and renders any `.vtu` written by the 3D solver
-(Three.js + inline VTU ASCII parser, time-slider over the series).
+The GUI is a Tauri 2 + Vue 3 desktop app. The Rust side never touches
+Python directly — it just spawns the unified `hydrus` CLI and forwards
+events, so the CLI stays the single source of truth for how
+simulations are launched.
+
+**Visualisation per simulation dimension:**
+
+| | When it shows | What it renders |
+|---|---|---|
+| `Hovmoller1D.vue` | `hydrus 1d` outputs (NOD_INF.OUT) | Plotly heatmap of `var(z, t)` with a red dashed scrub line + a linked profile-vs-z + a boundary-flux strip (rTop/vTop/vBot/Volume from T_LEVEL.OUT). |
+| `MeshContour2D.vue` | `hydrus 2d` outputs (h.out / th.out) | Filled colormap on the actual FE triangulation, resampled via barycentric interpolation onto a regular grid → Plotly heatmap. Optional streamlines overlay when vx.out + vz.out are present: trajectories integrated forward and backward from a seeded grid via Heun (RK2). |
+| `MeshViewer3D.vue` | `hydrus 3d` outputs (`.vtu` series) | Three.js scene with isosurface extraction via marching tetrahedra (hex cells split into 5 tets first), an iso value slider (0–100 % of the scalar range), wireframe overlay for context, and a time slider over the snapshot series. |
+
+![1D Hovmöller — h(z,t) for soil_loam_infiltr](DOCS/screenshots/gui_hovmoller.png)
+![2D contour + light theme — EX1 wetting front](DOCS/screenshots/gui_light_theme.png)
+![3D isosurface — richards3d_box](DOCS/screenshots/gui_3d_isosurface.png)
+
+**Parameter editor** (`ScenarioEditor.vue`) lives in the right column
+under the "Parameters" tab for any SWMS_2D scenario. It loads
+SELECTOR.IN as JSON via `hydrus scenario read`, lets you edit:
+
+- Heading + units
+- Solver: Kat / MaxIt / TolTh / TolH + 9 boolean flags
+- Materials table with all 9 van Genuchten–Mualem parameters per
+  material, plus a per-row Rosetta texture preset (12 USDA classes:
+  sand → clay) that fills the parameters in one click
+- Time control: dt / dtMin / dtMaxW / dMul / dMul2 + TPrint print-times
+
+…and writes back via `hydrus scenario write`. Live cross-field
+validation (`θr < θs`, `n > 1`, `dtMin < dt < dtMaxW`, etc.) shown
+inline in a VSCode-style Problems panel; Save is disabled while
+problems exist. The Python serializer is the single source of truth
+for ASCII formatting — round-trip is verified byte-identical on
+EX1 (and semantically identical on EX2-4) via `hydrus test roundtrip`.
+
+![Parameter editor with Rosetta preset dropdown](DOCS/screenshots/gui_param_editor.png)
 
 A **Regression** panel on the left exposes the same `hydrus test`
 gate as a one-click button: streaming PASS/RUNNING/— per kind with
@@ -154,9 +187,10 @@ wall-clock timing, plus an `OVERALL PASS / FAIL` badge.
 
 ![GUI regression panel after Run all](DOCS/screenshots/gui_regression.png)
 
-The Rust side never touches Python directly — it just spawns the
-unified `hydrus` CLI and forwards events. That way the CLI stays the
-single source of truth for how simulations are launched.
+**Theme:** light + dark with a topbar toggle (`☀ light` / `☾ dark`),
+persisted to localStorage. Plotly charts and Three.js backgrounds
+follow the theme live. Override at startup with `VITE_THEME=light` or
+the `?theme=light` URL param (useful for screenshots).
 
 ### Headless E2E mode
 
