@@ -33,7 +33,7 @@ pip install -e '.[dev]'           # + pytest + hatchling
 hydrus 1d   <input_dir> [-o OUT]              # HYDRUS-1D
 hydrus 2d   <input_dir> [-o OUT] [...]        # SWMS_2D
 hydrus 3d   [<input_dir>] [-o OUT]            # 3D Richards (no args → demo)
-hydrus test [1d|2d|3d|all]                    # smoke-test one or all paths
+hydrus test [1d|2d|3d|roundtrip|all]          # smoke-test one or all paths
 ```
 
 `-o` defaults to `<input_dir>/out`. Each subcommand only exposes the
@@ -94,6 +94,12 @@ Actual output from the most recent run on this checkout:
   tetra_vs_hex_lump_max_dh_cm:        0.962
   wall_s: 7.243
 
+=== hydrus test roundtrip ===
+  EX1 SELECTOR.IN parse → write → parse equivalence
+[PASS] roundtrip
+  diffs: 0
+  first: []
+
 ========================================
 OVERALL: PASS
 ```
@@ -111,6 +117,13 @@ What each metric means:
   between two solver variants on a thin-column infiltration. Threshold
   is 20 cm; lumped vs consistent ~5 cm difference is the expected
   effect of row-sum lumping (more diffusive, sharper-front-friendly).
+- **roundtrip** — EX1's `SELECTOR.IN` is parsed, re-written by the
+  Python serializer, and parsed again; `diffs: 0` means every config
+  field, material parameter, time-control entry, TPrint vector, and
+  seepage-face list survives the round-trip semantically intact. This
+  is the gate the (in-progress) GUI parameter editor relies on:
+  load EX1 → edit one number → save → re-run gives the *intended*
+  changed answer, not a corrupted scenario.
 
 ## Built-in fixtures
 

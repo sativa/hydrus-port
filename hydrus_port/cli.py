@@ -197,9 +197,21 @@ def _print_summary(name: str, ok: bool, summary: dict) -> None:
             print(f"  {k}: {v}")
 
 
+def _test_roundtrip(verbose: bool = True) -> tuple[bool, dict]:
+    """EX1 SELECTOR.IN round-trip: parse → write → parse → assert equal."""
+    if verbose:
+        print("  EX1 SELECTOR.IN parse → write → parse equivalence")
+    from tests.test_round_trip_selector import round_trip
+    in_dir = _repo_path("tests", "fixtures", "EX1", "inputs")
+    ok, diffs = round_trip(in_dir)
+    return ok, {"diffs": len(diffs), "first": diffs[:3]}
+
+
 def _run_test(args: argparse.Namespace) -> int:
-    targets = ["1d", "2d", "3d"] if args.target == "all" else [args.target]
-    runners = {"1d": _test_1d, "2d": _test_2d, "3d": _test_3d}
+    targets = (["1d", "2d", "3d", "roundtrip"]
+               if args.target == "all" else [args.target])
+    runners = {"1d": _test_1d, "2d": _test_2d, "3d": _test_3d,
+               "roundtrip": _test_roundtrip}
     overall_ok = True
     results = []
     for t in targets:
@@ -271,8 +283,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ptest.add_argument(
         "target", nargs="?", default="all",
-        choices=["1d", "2d", "3d", "all"],
-        help="Which simulator(s) to smoke-test (default: all)",
+        choices=["1d", "2d", "3d", "roundtrip", "all"],
+        help="Which test to run (default: all)",
     )
     ptest.set_defaults(func=_run_test)
 

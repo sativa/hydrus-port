@@ -32,3 +32,4 @@ desktop/src-tauri/Cargo.lock
 tests/fixtures/**/inputs/out/
 tests/fixtures/**/inputs/Out/
 tests/fixtures/**/out/
+tests/fixtures/**/_SELECTOR_RT.IN
