@@ -207,11 +207,48 @@ def _test_roundtrip(verbose: bool = True) -> tuple[bool, dict]:
     return ok, {"diffs": len(diffs), "first": diffs[:3]}
 
 
+def _test_cases(verbose: bool = True) -> tuple[bool, dict]:
+    """Run every canonical case in tests/cases/ via the unified adapter
+    layer. Pass criterion: each case yields >=4 output files."""
+    cases_dir = _repo_path("tests", "cases")
+    if not cases_dir.exists():
+        return False, {"error": "no tests/cases dir"}
+    import tempfile
+    from .schema import Scenario
+    summary: dict = {"cases": {}}
+    overall = True
+    for case in sorted(cases_dir.glob("*.json")):
+        sc = Scenario.from_path(case)
+        ad = _adapter_for(sc.dimension)
+        with tempfile.TemporaryDirectory(prefix="hydrus-case-test-") as td:
+            ad.save(sc, td)
+            try:
+                if sc.dimension == "2d":
+                    from swms2d.swms2d import SWMS2DSimulation
+                    SWMS2DSimulation(td, td + "/out").run(verbose=False)
+                elif sc.dimension == "1d":
+                    from hydrus1d.hydrus import run_simulation
+                    run_simulation(input_dir=td, output_dir=td + "/out")
+                import os
+                files = os.listdir(td + "/out")
+                summary["cases"][case.stem] = (
+                    f"{sc.dimension} {len(files)} files ✓"
+                    if len(files) >= 4 else
+                    f"{sc.dimension} {len(files)} files ✗"
+                )
+                if len(files) < 4:
+                    overall = False
+            except Exception as e:
+                summary["cases"][case.stem] = f"FAILED: {e}"
+                overall = False
+    return overall, summary
+
+
 def _run_test(args: argparse.Namespace) -> int:
-    targets = (["1d", "2d", "3d", "roundtrip"]
+    targets = (["1d", "2d", "3d", "roundtrip", "cases"]
                if args.target == "all" else [args.target])
     runners = {"1d": _test_1d, "2d": _test_2d, "3d": _test_3d,
-               "roundtrip": _test_roundtrip}
+               "roundtrip": _test_roundtrip, "cases": _test_cases}
     overall_ok = True
     results = []
     for t in targets:
@@ -306,31 +343,91 @@ def _dict_to_scenario(d: dict):
     return cfg, mats, t, extras
 
 
-def _run_scenario(args: argparse.Namespace) -> int:
-    import json
-    from swms2d.input import parse_selector, write_selector
-    in_dir = Path(args.input_dir).expanduser().resolve()
-    sel_path = next(
-        (p for p in in_dir.iterdir() if p.name.lower() == "selector.in"),
-        in_dir / "SELECTOR.IN",
+def _detect_dimension(input_dir: Path) -> str:
+    """Sniff the input directory to decide which adapter to use."""
+    names_lower = {p.name.lower() for p in input_dir.iterdir()}
+    if "grid.in" in names_lower:        # SWMS_2D unique marker
+        return "2d"
+    if "profile.dat" in names_lower:    # HYDRUS-1D unique marker
+        return "1d"
+    if "selector.in" in names_lower:
+        # ambiguous — peek at the file header to decide
+        sel = next(p for p in input_dir.iterdir()
+                   if p.name.lower() == "selector.in")
+        head = sel.read_text(errors="ignore")[:80]
+        return "1d" if head.startswith("Pcp_File_Version") else "2d"
+    raise SystemExit(
+        f"can't detect simulator format in {input_dir} "
+        f"(need GRID.IN or Profile.dat or Selector.in)"
     )
+
+
+def _adapter_for(dim: str):
+    """Return the adapter module for the given dimension."""
+    if dim in ("1d", "hydrus1d"):
+        from .adapters import hydrus1d as a
+        return a
+    if dim in ("2d", "swms2d"):
+        from .adapters import swms2d as a
+        return a
+    raise SystemExit(f"no adapter for dimension {dim!r}")
+
+
+def _run_scenario(args: argparse.Namespace) -> int:
+    """Unified scenario read/write — auto-detects 1d vs 2d source format,
+    canonical JSON is the on-wire format in both directions."""
+    import json
+    in_dir = Path(args.input_dir).expanduser().resolve()
     if args.action == "read":
-        cfg, mats, time, extras = parse_selector(sel_path)
-        print(json.dumps(_scenario_to_dict(cfg, mats, time, extras), indent=2))
+        dim = _detect_dimension(in_dir)
+        scenario = _adapter_for(dim).load(in_dir)
+        print(scenario.to_json())
         return 0
     elif args.action == "write":
-        # Read JSON from stdin or from --json file
+        # Read JSON from stdin or --json file
         if args.json:
             payload = json.loads(Path(args.json).read_text())
         else:
             payload = json.loads(sys.stdin.read())
-        cfg, mats, time, extras = _dict_to_scenario(payload)
-        out = Path(args.out or sel_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        write_selector(cfg, mats, time, extras, out)
-        print(f"wrote {out}", file=sys.stderr)
+        from .schema import Scenario
+        scenario = Scenario.from_dict(payload)
+        out_dir = Path(args.out).expanduser().resolve() if args.out else in_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        _adapter_for(scenario.dimension).save(scenario, out_dir)
+        print(f"wrote {scenario.dimension} scenario → {out_dir}", file=sys.stderr)
         return 0
     raise SystemExit(f"unknown scenario action: {args.action}")
+
+
+def _run_case(args: argparse.Namespace) -> int:
+    """`hydrus run <case.json>` — runs a canonical scenario by writing
+    it to a temp dir via the appropriate adapter and dispatching to
+    the matching dimensional driver."""
+    import json
+    import tempfile
+    from .schema import Scenario
+    scen_path = Path(args.case).expanduser().resolve()
+    scenario = Scenario.from_path(scen_path)
+    print(f"running {scenario.dimension} case: {scenario.meta.name!r}",
+          file=sys.stderr)
+    out = args.output_dir or (scen_path.parent / f"{scen_path.stem}_out")
+    Path(out).mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="hydrus-case-") as td:
+        ad = _adapter_for(scenario.dimension)
+        ad.save(scenario, td)
+        # Some adapters (e.g. swms2d) need an existing GRID.IN; if so the
+        # case writer should have already produced one or the user must
+        # be running from a fixture that already has it.
+        if scenario.dimension == "2d":
+            from swms2d.swms2d import SWMS2DSimulation
+            SWMS2DSimulation(td, str(out)).run(verbose=not args.quiet)
+        elif scenario.dimension == "1d":
+            from hydrus1d.hydrus import run_simulation
+            run_simulation(input_dir=td, output_dir=str(out))
+        else:
+            raise SystemExit(f"3D case files not yet supported via hydrus run")
+    print(f"output → {out}", file=sys.stderr)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -339,7 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="HYDRUS-port unified entry: 1D / 2D / 3D Richards.",
     )
     sub = p.add_subparsers(dest="kind", required=True,
-                           metavar="{1d,2d,3d,test,scenario}")
+                           metavar="{1d,2d,3d,run,test,scenario}")
 
     # ----- 1d ---------------------------------------------------------
     p1d = sub.add_parser(
@@ -388,7 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ptest.add_argument(
         "target", nargs="?", default="all",
-        choices=["1d", "2d", "3d", "roundtrip", "all"],
+        choices=["1d", "2d", "3d", "roundtrip", "cases", "all"],
         help="Which test to run (default: all)",
     )
     ptest.set_defaults(func=_run_test)
@@ -406,6 +503,16 @@ def build_parser() -> argparse.ArgumentParser:
     pscen.add_argument("--out", type=Path, default=None,
                        help="Override output SELECTOR.IN path")
     pscen.set_defaults(func=_run_scenario)
+
+    # ----- run (canonical case file) -----------------------------------
+    prun = sub.add_parser(
+        "run",
+        help="Run a canonical .json scenario (any dimension)",
+    )
+    prun.add_argument("case", type=Path, help="Canonical scenario JSON file")
+    prun.add_argument("-o", "--output-dir", type=Path, default=None)
+    prun.add_argument("--quiet", action="store_true")
+    prun.set_defaults(func=_run_case)
 
     return p
 
