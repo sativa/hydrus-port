@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "hydrus-port"
 version = "0.2.0"
 description = "Python ports of HYDRUS-1D and SWMS_2D with a 3D scikit-fem extension"
-readme = "swms2d/README.md"
+readme = "README.md"
 license = { text = "CC0-1.0" }
 requires-python = ">=3.10"
 authors = [
@@ -67,6 +67,7 @@ include = [
     "hydrus_port_server/",
     "tests/",
     "DOCS/",
+    "README.md",
     "pyproject.toml",
 ]
 exclude = [

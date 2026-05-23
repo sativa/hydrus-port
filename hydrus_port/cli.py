@@ -6,6 +6,7 @@ Usage
     hydrus 1d <input_dir> [-o OUT]              HYDRUS-1D
     hydrus 2d <input_dir> [-o OUT] [...]        SWMS_2D
     hydrus 3d [<input_dir>] [-o OUT]            Richards 3D (scikit-fem)
+    hydrus test [1d|2d|3d|all]                  Run smoke tests
 
 Each subcommand defaults `-o` to `<input_dir>/out`. For 3D the input
 positional is optional and defaults to running the built-in synthetic
@@ -14,6 +15,7 @@ box demo from tests/validate_richards3d.py.
 from __future__ import annotations
 import argparse
 import sys
+import time
 from pathlib import Path
 
 
@@ -58,12 +60,169 @@ def _run_3d(args: argparse.Namespace) -> int:
     )
 
 
+# ----------------------------------------------------------------------
+# `hydrus test` — smoke-test each simulation path
+# ----------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _repo_path(*parts: str) -> Path:
+    return REPO_ROOT.joinpath(*parts)
+
+
+def _summarise_1d_outputs(out_dir: Path) -> dict:
+    """Pull key numbers out of NOD_INF.OUT / Balance.out for reporting."""
+    summary: dict = {"output_dir": str(out_dir), "files": []}
+    if not out_dir.exists():
+        return summary
+    summary["files"] = sorted(p.name for p in out_dir.iterdir() if p.is_file())
+    bal = out_dir / "BALANCE.OUT"
+    if bal.exists():
+        # Last numeric line is usually the final time-step balance entry.
+        lines = [l for l in bal.read_text().splitlines() if l.strip()]
+        last = next((l for l in reversed(lines)
+                     if l.strip().split()[0].lstrip("-").replace(".", "").isdigit()),
+                    None)
+        if last:
+            summary["balance_last_line"] = last.strip()
+    return summary
+
+
+def _summarise_2d_outputs(out_dir: Path) -> dict:
+    summary: dict = {"output_dir": str(out_dir), "files": []}
+    if not out_dir.exists():
+        return summary
+    summary["files"] = sorted(p.name for p in out_dir.iterdir() if p.is_file())
+    bal = out_dir / "Balance.out"
+    if bal.exists():
+        # Pull the last "Volume" / "WatBalT" lines as a coarse mass-balance check
+        lines = bal.read_text().splitlines()
+        for key in ("Volume", "WatBalT", "WatBalR"):
+            hits = [l for l in lines if key in l]
+            if hits:
+                summary[f"{key}_last"] = hits[-1].strip()
+    return summary
+
+
+def _test_1d(verbose: bool = True) -> tuple[bool, dict]:
+    """Run HYDRUS-1D on soil_loam_infiltr."""
+    input_dir = _repo_path("tests", "fixtures", "soil_loam_infiltr", "inputs")
+    out = _repo_path("tests", "fixtures", "soil_loam_infiltr", "inputs", "out")
+    if out.exists():
+        for p in out.iterdir():
+            p.unlink()
+    if verbose:
+        print(f"  input: {input_dir}")
+    t0 = time.time()
+    from hydrus1d.hydrus import run_simulation
+    sim = run_simulation(input_dir=str(input_dir), output_dir=str(out))
+    dt = time.time() - t0
+    summary = _summarise_1d_outputs(out)
+    final_t = getattr(getattr(sim, "state", None), "time", None)
+    summary["wall_s"] = round(dt, 3)
+    summary["sim_t"] = float(final_t.t) if final_t is not None else None
+    expected = {"BALANCE.OUT", "NOD_INF.OUT", "T_LEVEL.OUT"}
+    have = set(summary.get("files", []))
+    ok = expected.issubset(have)
+    return ok, summary
+
+
+def _test_2d(verbose: bool = True) -> tuple[bool, dict]:
+    """Run SWMS_2D EX1."""
+    input_dir = _repo_path("tests", "fixtures", "EX1", "inputs")
+    out = _repo_path("tests", "fixtures", "EX1", "inputs", "out")
+    if out.exists():
+        for p in out.iterdir():
+            p.unlink()
+    if verbose:
+        print(f"  input: {input_dir}")
+    t0 = time.time()
+    from swms2d.swms2d import SWMS2DSimulation
+    sim = SWMS2DSimulation(input_dir, out)
+    sim.run(verbose=False)
+    dt = time.time() - t0
+    summary = _summarise_2d_outputs(out)
+    summary["wall_s"] = round(dt, 3)
+    expected = {"Balance.out", "h.out", "th.out", "Run_Inf.out"}
+    have = set(summary.get("files", []))
+    ok = expected.issubset(have)
+    return ok, summary
+
+
+def _test_3d(verbose: bool = True) -> tuple[bool, dict]:
+    """Run the 3D Richards box validation (Tet/Hex × lumped/consistent)."""
+    if verbose:
+        print("  Tet/Hex × lumped/consistent cross-validation")
+    t0 = time.time()
+    from tests.validate_richards3d import run_case
+    results: dict = {}
+    import numpy as np
+    for element in ("tetra", "hex"):
+        for lump in (True, False):
+            tag = f"{element}/{'lump' if lump else 'consistent'}"
+            zs, hs, ths = run_case(element, lump)
+            results[tag] = (zs, hs, ths)
+    dt = time.time() - t0
+    summary: dict = {"wall_s": round(dt, 3), "cases": {}}
+    threshold = 20.0
+    ok = True
+    for element in ("tetra", "hex"):
+        _, h_l, _ = results[f"{element}/lump"]
+        _, h_c, _ = results[f"{element}/consistent"]
+        d = float(np.max(np.abs(h_l - h_c)))
+        summary["cases"][f"{element}_lump_vs_consistent_max_dh_cm"] = round(d, 3)
+        if d > threshold:
+            ok = False
+    z_t, h_t, _ = results["tetra/lump"]
+    z_h, h_h, _ = results["hex/lump"]
+    h_h_at_t = np.interp(z_t, z_h, h_h)
+    cross = float(np.max(np.abs(h_t - h_h_at_t)))
+    summary["cases"]["tetra_vs_hex_lump_max_dh_cm"] = round(cross, 3)
+    if cross > threshold:
+        ok = False
+    return ok, summary
+
+
+def _print_summary(name: str, ok: bool, summary: dict) -> None:
+    status = "PASS" if ok else "FAIL"
+    print(f"\n[{status}] {name}")
+    for k, v in summary.items():
+        if k == "files":
+            print(f"  files ({len(v)}): {', '.join(v)}")
+        elif k == "cases":
+            for ck, cv in v.items():
+                print(f"  {ck}: {cv}")
+        else:
+            print(f"  {k}: {v}")
+
+
+def _run_test(args: argparse.Namespace) -> int:
+    targets = ["1d", "2d", "3d"] if args.target == "all" else [args.target]
+    runners = {"1d": _test_1d, "2d": _test_2d, "3d": _test_3d}
+    overall_ok = True
+    results = []
+    for t in targets:
+        print(f"\n=== hydrus test {t} ===")
+        try:
+            ok, summary = runners[t]()
+        except Exception as e:
+            ok, summary = False, {"error": repr(e)}
+        results.append((t, ok, summary))
+        _print_summary(t, ok, summary)
+        overall_ok = overall_ok and ok
+    print("\n" + "=" * 40)
+    print("OVERALL: " + ("PASS" if overall_ok else "FAIL"))
+    return 0 if overall_ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="hydrus",
         description="HYDRUS-port unified entry: 1D / 2D / 3D Richards.",
     )
-    sub = p.add_subparsers(dest="kind", required=True, metavar="{1d,2d,3d}")
+    sub = p.add_subparsers(dest="kind", required=True,
+                           metavar="{1d,2d,3d,test}")
 
     # ----- 1d ---------------------------------------------------------
     p1d = sub.add_parser(
@@ -104,6 +263,18 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Reserved for future mesh-driven scenarios")
     p3d.add_argument("-o", "--output-dir", type=Path, default=None)
     p3d.set_defaults(func=_run_3d)
+
+    # ----- test -------------------------------------------------------
+    ptest = sub.add_parser(
+        "test",
+        help="Run smoke tests for one or all simulation paths",
+    )
+    ptest.add_argument(
+        "target", nargs="?", default="all",
+        choices=["1d", "2d", "3d", "all"],
+        help="Which simulator(s) to smoke-test (default: all)",
+    )
+    ptest.set_defaults(func=_run_test)
 
     return p
 
