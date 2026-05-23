@@ -64,6 +64,8 @@ class SimulationConfig:
     lUpW: bool = False      # Upstream weighting in solute transport
     lArtD: bool = False     # Artificial dispersion for solute
     lOrt: bool = True       # Use ORTHOMIN solver (vs Gauss elim)
+    lHyst: bool = False     # Soil-water retention hysteresis (Scott 1983)
+    lTemp: bool = False     # Couple heat transport (temper.py)
 
     # Convergence
     MaxIt: int = 20         # Max Picard iterations per timestep

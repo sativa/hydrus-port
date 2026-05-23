@@ -27,10 +27,14 @@ from .dataclasses import (
 from .input import parse_example
 from .material import saturated_values
 from .watflow import solve_water_flow, set_mat, build_material_tables
+from .hysteresis import (HysteresisState, HysteresisMaterial,
+                         init_state as _hyst_init, step_state as _hyst_step,
+                         IHYST_DRYING)
 from .output import (HOutWriter, ThOutWriter, ConcOutWriter,
                      RunInfWriter, ObsNodWriter, FluxOutWriter, QOutWriter,
                      BalanceWriter, CumQWriter, ALevelWriter, BouOutWriter,
-                     SolInfWriter, CheckOutWriter)
+                     SolInfWriter, CheckOutWriter, TempOutWriter)
+from .temper import heat_step, default_ParT
 from .sink import set_snk, normalize_beta
 from .solute import solute_step
 
@@ -113,6 +117,43 @@ class SWMS2DSimulation:
         # Material-derived constants
         self.thR, self.thSat, self.hSat, self.ConSat = \
             saturated_values(self.materials)
+
+        # Heat-transport state (only used if cfg.lTemp is True)
+        if self.cfg.lTemp:
+            NumNP_t = self.mesh.NumNP
+            self.Temp = np.full(NumNP_t, self.extras.get("temp_init", 20.0),
+                                np.float64)
+            self.TempOld = self.Temp.copy()
+            self.ParT = self.extras.get(
+                "temp_ParT", default_ParT(NMat=len(self.materials))
+            )
+            self.KodeT = self.extras.get(
+                "temp_KodeT", np.zeros(NumNP_t, np.int32)
+            )
+            self.T_bc = self.extras.get(
+                "temp_T_bc", np.zeros(NumNP_t, np.float64)
+            )
+            self.temp_epsi = self.extras.get("temp_epsi", 0.5)
+            self.temp_root_T = self.extras.get("temp_root_T", 0.0)
+            self.temp_IKappa = self.extras.get("temp_IKappa", 1)
+        else:
+            self.Temp = None
+            self.TempOld = None
+
+        # Hysteresis state (only used if cfg.lHyst is True)
+        self.hyst_state: HysteresisState | None = None
+        self.hyst_materials: list[HysteresisMaterial] | None = None
+        if self.cfg.lHyst:
+            wetting = self.extras.get("hyst_wetting_materials")
+            if wetting is None:
+                # Same params for drying and wetting — degenerate case
+                wetting = self.materials
+            self.hyst_materials = [
+                HysteresisMaterial(drying=d, wetting=w)
+                for d, w in zip(self.materials, wetting)
+            ]
+            self.hyst_state = _hyst_init(self.mesh.NumNP,
+                                         default_branch=IHYST_DRYING)
 
         # Log-spaced K/C/θ table (mirrors Fortran GenMat — needed for
         # bit-equal numerical match with the Fortran reference)
@@ -216,6 +257,9 @@ class SWMS2DSimulation:
         self.c_writer  = (ConcOutWriter(self.output_dir / "conc.out",
                                         heading, units, self.cfg.KAT)
                           if self.cfg.lChem else None)
+        self.temp_writer = (TempOutWriter(self.output_dir / "Temp.out",
+                                          heading, units, self.cfg.KAT)
+                            if self.cfg.lTemp else None)
         # Auxiliary output writers (always on; Fortran always emits these)
         self.runinf_writer = RunInfWriter(
             self.output_dir / "Run_Inf.out",
@@ -487,6 +531,8 @@ class SWMS2DSimulation:
                         debug_TLevel=self.TLevel,
                         NDr=self.drain_NDr,
                         ND_drain=self.drain_ND,
+                        hyst_state=self.hyst_state,
+                        hyst_materials=self.hyst_materials,
                     )
                 self.t = t_new
                 self.time.dt = dt_used
@@ -496,6 +542,23 @@ class SWMS2DSimulation:
                 n_iter = 1
                 ThNew_arr = self.ThNew
                 self.t = self.tOld + self.time.dt
+
+            # Heat transport step (couples to watflow via ThNew, Vx/Vz)
+            if self.cfg.lTemp:
+                # Compute Darcy velocity at nodes for advection coupling
+                from .solute import veloc as _veloc
+                Vx, Vz = _veloc(self.mesh, nodes.hNew, Con, self.cfg.KAT)
+                self.TempOld[:] = self.Temp
+                self.Temp = heat_step(
+                    self.mesh, self.cfg, self.t, self.time.dt,
+                    ThNew_arr, self.ThOld, Vx, Vz,
+                    self.TempOld, self.ParT,
+                    self.KodeT, self.T_bc,
+                    Sink=self.Sink_arr,
+                    T_root=self.temp_root_T,
+                    epsi=self.temp_epsi,
+                    IKappa=self.temp_IKappa,
+                )
 
             # Solute transport step
             if self.cfg.lChem:
@@ -552,6 +615,9 @@ class SWMS2DSimulation:
                 if self.c_writer:
                     self.c_writer.write_snapshot(self.t, self.mesh,
                                                  nodes.Conc.copy())
+                if self.temp_writer:
+                    self.temp_writer.write_snapshot(self.t, self.mesh,
+                                                    self.Temp.copy())
                 # Always write the auxiliary per-PLevel outputs
                 self.balance_writer.write_snapshot(
                     self.t, self.mesh, nodes.hNew, self.ThOld, ThNew_arr,
@@ -604,6 +670,8 @@ class SWMS2DSimulation:
         self.th_writer.close()
         if self.c_writer:
             self.c_writer.close()
+        if self.temp_writer:
+            self.temp_writer.close()
         self.runinf_writer.close()
         self.flux_writer.close()
         self.q_writer.close()

@@ -702,6 +702,8 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
                      debug_TLevel: int = 0,
                      NDr: int = 0,
                      ND_drain: Optional[NDArray[np.int32]] = None,
+                     hyst_state: Optional[object] = None,
+                     hyst_materials: Optional[list] = None,
                      ) -> tuple[float, float, int, bool,
                                 NDArray[np.float64], NDArray[np.float64],
                                 NDArray[np.float64], NDArray[np.float64]]:
@@ -745,6 +747,22 @@ def solve_water_flow(mesh: Mesh, cfg: SimulationConfig, time: TimeControl,
             Con, Cap, ThNew_new = set_mat(mesh, materials, thR, thSat, hSat,
                                           ConSat, Explic=Explic, tables=tables)
             ThNew[:] = ThNew_new
+
+            # Hysteresis override: when active, replace the single-curve
+            # theta(h) and C(h) values from set_mat with branch-aware
+            # hysteresis evaluations. K(h) is left as set_mat's value
+            # (Scott 1983 assumes K depends only on theta, not branch).
+            if hyst_state is not None and hyst_materials is not None:
+                from .hysteresis import step_state as _hyst_step
+                th_h, cap_h = _hyst_step(
+                    hyst_state, mesh.nodes.hNew, mesh.nodes.hOld,
+                    mesh.nodes.MatNum, hyst_materials,
+                )
+                ThNew[:] = th_h
+                # Cap was Ci*Dxz/Axz in set_mat; hysteresis cap is bare
+                # dtheta/dh per material curve. Apply same scaling.
+                Axz = mesh.nodes.Axz; Dxz = mesh.nodes.Dxz
+                Cap[:] = cap_h * Dxz / Axz
 
             # Newton diagonal correction: F[i] * dC/dh|h_i * (h_i - h_n_i)/dt.
             # Captures the dominant Jacobian term ∂R/∂h_i without the more
