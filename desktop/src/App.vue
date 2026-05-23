@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import ScenarioPicker from "./components/ScenarioPicker.vue";
 import LogStream from "./components/LogStream.vue";
 import ProfilePlot from "./components/ProfilePlot.vue";
 import MeshViewer3D from "./components/MeshViewer3D.vue";
 import OutputBrowser from "./components/OutputBrowser.vue";
 import Regression from "./components/Regression.vue";
+import Hovmoller1D from "./components/Hovmoller1D.vue";
 import { api, type JobMeta, type PythonInfo } from "./api";
 
 const py = ref<PythonInfo | null>(null);
 const py_err = ref<string | null>(null);
 const job = ref<JobMeta | null>(null);
+
+const isOneDimensional = computed(() => {
+  const k = job.value?.kind ?? "";
+  return k === "hydrus1d" || k === "1d";
+});
 
 onMounted(async () => {
   try {
@@ -100,7 +106,8 @@ function onJobUpdated(j: JobMeta) {
       </section>
 
       <section class="col-mid">
-        <ProfilePlot :job="job" />
+        <Hovmoller1D v-if="isOneDimensional" :job="job" />
+        <ProfilePlot v-else :job="job" />
         <LogStream :job="job" @job-status="onJobUpdated" />
       </section>
 

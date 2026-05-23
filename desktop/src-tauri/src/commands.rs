@@ -1,7 +1,8 @@
 // Tauri command handlers invoked from the Vue frontend.
 
 use crate::jobs::{JobHandle, JobMeta, JobRegistry};
-use crate::parse::{read_numeric_table, Series};
+use crate::parse::{parse_nod_inf as parse_nod_inf_impl, read_numeric_table,
+                   NodInfSeries, Series};
 use crate::scenarios::{self, Scenario};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -345,6 +346,11 @@ pub fn parse_obs_node(path: String) -> Result<Series, String> {
 #[tauri::command]
 pub fn parse_node_inf(path: String) -> Result<Series, String> {
     read_numeric_table(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+pub fn parse_nod_inf_series(path: String) -> Result<NodInfSeries, String> {
+    parse_nod_inf_impl(std::path::Path::new(&path))
 }
 
 #[tauri::command]

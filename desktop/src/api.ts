@@ -34,6 +34,13 @@ export type Series = {
   rows: number[][];
 };
 
+export type NodInfSeries = {
+  times: number[];                            // n_t
+  depths: number[];                           // n_z (ascending)
+  vars: Record<string, number[][]>;           // each name -> n_t × n_z
+  var_names: string[];
+};
+
 export type OutputFile = {
   name: string;
   path: string;
@@ -67,6 +74,8 @@ export const api = {
     invoke<string>("read_output_text", { path, maxBytes: max_bytes }),
   parseTable: (path: string) =>
     invoke<Series>("parse_obs_node", { path }),
+  parseNodInf: (path: string) =>
+    invoke<NodInfSeries>("parse_nod_inf_series", { path }),
   listVtuSeries: (dir: string) =>
     invoke<string[]>("list_vtu_series", { dir }),
   readBytes: (path: string) =>

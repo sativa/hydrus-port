@@ -25,6 +25,7 @@ pub fn run() {
             commands::read_output_bytes,
             commands::parse_obs_node,
             commands::parse_node_inf,
+            commands::parse_nod_inf_series,
             commands::list_vtu_series,
             commands::detect_python,
         ])
