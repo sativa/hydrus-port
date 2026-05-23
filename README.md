@@ -141,8 +141,21 @@ tests/fixtures/scenario_3d_{water,chem}/  Larger HYDRUS-1D field scenarios
 ```bash
 cd desktop && npm install            # one-time
 npm run tauri:dev                    # dev: HMR + Tauri window
-npm run tauri:build                  # release: .app / .dmg
+npm run tauri:build                  # release: produces .app bundle
 ```
+
+The release `.app` lands at
+`desktop/src-tauri/target/release/bundle/macos/hydrus-port-desktop.app`
+(~10 MB self-contained arm64 binary on Apple Silicon). The
+companion `.dmg` step uses `bundle_dmg.sh` which relies on osascript
+and can fail in non-interactive sessions — when that happens, you
+can ship the `.app` as a plain zip instead.
+
+A pre-built **HYDRUS-1D simulation** sample is bundled in
+`hydrus-port-desktop.app/Contents/Resources/`. The runtime still
+expects Python 3.10+ and the `hydrus-port` package on PATH (or the
+repo root resolvable via `HYDRUS_PORT_ROOT`); the .app is the GUI
+shell, not a Python-bundled monolith.
 
 The GUI is a Tauri 2 + Vue 3 desktop app. The Rust side never touches
 Python directly — it just spawns the unified `hydrus` CLI and forwards
