@@ -55,27 +55,53 @@ export type Swms2dField = {
   num_np: number;
 };
 
-export type Material = {
-  thr: number; ths: number; tha: number; thm: number;
-  alpha: number; n: number; Ks: number; Kk: number; thk: number;
+export type CanonicalMaterial = {
+  theta_r: number; theta_s: number;
+  alpha: number; n: number; Ks: number;
+  l: number;
+  theta_a: number | null; theta_m: number | null;
+  theta_k: number | null; Kk: number | null;
 };
-export type Scenario_JSON = {
-  heading: string;
-  units: string[];
-  config: {
-    KAT: number; MaxIt: number; TolTh: number; TolH: number;
-    lWat: boolean; lChem: boolean; CheckF: boolean; ShortF: boolean;
-    FluxF: boolean; AtmInF: boolean; SeepF: boolean;
-    FreeD: boolean; DrainF: boolean;
+
+export type CanonicalScenario = {
+  schema_version: string;
+  meta: { name: string; description: string; source: string };
+  units: { length: string; time: string; mass: string };
+  solver: {
+    geometry_kind: "horizontal" | "axisymmetric" | "vertical";
+    max_picard: number;
+    tol_theta: number;
+    tol_h: number;
+    water_flow: boolean;
+    solute_transport: boolean;
+    heat_transport: boolean;
+    root_uptake: boolean;
+    atmospheric_bc: boolean;
+    free_drainage: boolean;
+    seepage_face: boolean;
+    subsurface_drain: boolean;
+    gw_level: boolean;
+    short_output: boolean;
+    flux_output: boolean;
+    check_output: boolean;
+    hysteresis: boolean;
+    equilibrium: boolean;
   };
-  materials: Material[];
+  materials: CanonicalMaterial[];
   time: {
-    dt: number; dtMin: number; dtMaxW: number;
-    dMul: number; dMul2: number;
+    dt: number; dt_min: number; dt_max: number;
+    dt_mul: number; dt_mul2: number;
+    it_min: number; it_max: number;
+    t_init: number; t_max: number;
+    print_times: number[];
   };
-  NLay?: number; hTab1?: number; hTabN?: number; NPar?: number;
-  TPrint: number[];
-  extras_raw?: Record<string, any>;
+  root_uptake: any | null;
+  solute: any | null;
+  geometry: { kind: "1d" | "2d" | "3d"; [k: string]: any };
+  atmospheric: any | null;
+  seepage: any | null;
+  drain: any | null;
+  legacy_extras: Record<string, any>;
 };
 
 export type OutputFile = {
@@ -119,8 +145,8 @@ export const api = {
     invoke<Swms2dField>("parse_swms2d_field", { path, numNp }),
 
   readScenario: (inputDir: string) =>
-    invoke<Scenario_JSON>("read_scenario", { inputDir }),
-  writeScenario: (inputDir: string, payload: Scenario_JSON) =>
+    invoke<CanonicalScenario>("read_scenario", { inputDir }),
+  writeScenario: (inputDir: string, payload: CanonicalScenario) =>
     invoke<void>("write_scenario", { inputDir, payload }),
   listVtuSeries: (dir: string) =>
     invoke<string[]>("list_vtu_series", { dir }),

@@ -28,10 +28,11 @@ const isTwoDimensional = computed(() => {
 const rightTab = ref<"3d" | "editor">("editor");
 const editorPath = ref<string | null>(null);
 function onScenarioSelected(path: string, kind: string) {
-  // The editor's serializer (swms2d/input.py write_selector) currently
-  // covers SWMS_2D's SELECTOR.IN format. HYDRUS-1D's Selector.in is a
-  // different schema and is read-only in the editor until P3 extends.
-  if (kind === "swms2d" || kind === "2d") {
+  // Editor handles both 1d (HYDRUS-1D Selector.in + Profile.dat) and
+  // 2d (SWMS_2D SELECTOR.IN + GRID.IN) via the unified canonical
+  // schema; richards3d uses .json case files (TODO surface here).
+  if (kind === "hydrus1d" || kind === "1d"
+      || kind === "swms2d"  || kind === "2d") {
     editorPath.value = path;
   } else {
     editorPath.value = null;
@@ -39,7 +40,7 @@ function onScenarioSelected(path: string, kind: string) {
   // Auto-switch right-panel tab to the most useful view per scenario
   if (kind === "richards3d" || kind === "3d") {
     rightTab.value = "3d";
-  } else if (kind === "swms2d" || kind === "2d") {
+  } else {
     rightTab.value = "editor";
   }
 }

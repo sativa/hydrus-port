@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
-import { api, type Scenario_JSON, type Material } from "../api";
+import { api, type CanonicalScenario, type CanonicalMaterial } from "../api";
 
 const props = defineProps<{ scenarioPath: string | null }>();
 const emit = defineEmits<{ (e: "scenario-saved", path: string): void }>();
 
-const scen = ref<Scenario_JSON | null>(null);
+const scen = ref<CanonicalScenario | null>(null);
 const dirty = ref(false);
 const busy = ref(false);
 const err = ref<string | null>(null);
@@ -54,10 +54,14 @@ async function reload() {
 function addMaterial() {
   if (!scen.value) return;
   const cur = scen.value.materials;
-  const tmpl: Material = cur.length
+  const tmpl: CanonicalMaterial = cur.length
     ? { ...cur[cur.length - 1] }
-    : { thr: 0.05, ths: 0.40, tha: 0.05, thm: 0.40,
-        alpha: 0.04, n: 1.5, Ks: 0.01, Kk: 0.01, thk: 0.40 };
+    : {
+        theta_r: 0.05, theta_s: 0.40,
+        alpha: 0.04, n: 1.5, Ks: 0.01,
+        l: 0.5,
+        theta_a: null, theta_m: null, theta_k: null, Kk: null,
+      };
   cur.push(tmpl);
   markDirty();
 }
@@ -68,72 +72,97 @@ function removeMaterial(idx: number) {
   markDirty();
 }
 
-// Soil texture presets (Rosetta H1 USDA classes — abbreviated):
-// θr, θs, α (1/cm), n, Ks (cm/d). Stored in cm/d; expose as-is.
-const presets: Record<string, Partial<Material>> = {
-  "sand":        { thr: 0.045, ths: 0.43, alpha: 0.145,  n: 2.68, Ks: 712.8 },
-  "loamy sand":  { thr: 0.057, ths: 0.41, alpha: 0.124,  n: 2.28, Ks: 350.2 },
-  "sandy loam":  { thr: 0.065, ths: 0.41, alpha: 0.075,  n: 1.89, Ks: 106.1 },
-  "loam":        { thr: 0.078, ths: 0.43, alpha: 0.036,  n: 1.56, Ks: 24.96 },
-  "silt":        { thr: 0.034, ths: 0.46, alpha: 0.016,  n: 1.37, Ks: 6.00 },
-  "silt loam":   { thr: 0.067, ths: 0.45, alpha: 0.020,  n: 1.41, Ks: 10.80 },
-  "sandy clay loam":{ thr: 0.100, ths: 0.39, alpha: 0.059, n: 1.48, Ks: 31.44 },
-  "clay loam":   { thr: 0.095, ths: 0.41, alpha: 0.019,  n: 1.31, Ks: 6.24 },
-  "silty clay loam":{ thr: 0.089, ths: 0.43, alpha: 0.010, n: 1.23, Ks: 1.68 },
-  "sandy clay":  { thr: 0.100, ths: 0.38, alpha: 0.027,  n: 1.23, Ks: 2.88 },
-  "silty clay":  { thr: 0.070, ths: 0.36, alpha: 0.005,  n: 1.09, Ks: 0.48 },
-  "clay":        { thr: 0.068, ths: 0.38, alpha: 0.008,  n: 1.09, Ks: 4.80 },
+// Soil texture presets (Rosetta H1 USDA classes, cm and day units).
+// θr / θs / α (1/cm) / n / Ks (cm/d).
+const presets: Record<string, Partial<CanonicalMaterial>> = {
+  "sand":           { theta_r: 0.045, theta_s: 0.43, alpha: 0.145, n: 2.68, Ks: 712.8 },
+  "loamy sand":     { theta_r: 0.057, theta_s: 0.41, alpha: 0.124, n: 2.28, Ks: 350.2 },
+  "sandy loam":     { theta_r: 0.065, theta_s: 0.41, alpha: 0.075, n: 1.89, Ks: 106.1 },
+  "loam":           { theta_r: 0.078, theta_s: 0.43, alpha: 0.036, n: 1.56, Ks: 24.96 },
+  "silt":           { theta_r: 0.034, theta_s: 0.46, alpha: 0.016, n: 1.37, Ks: 6.00 },
+  "silt loam":      { theta_r: 0.067, theta_s: 0.45, alpha: 0.020, n: 1.41, Ks: 10.80 },
+  "sandy clay loam":{ theta_r: 0.100, theta_s: 0.39, alpha: 0.059, n: 1.48, Ks: 31.44 },
+  "clay loam":      { theta_r: 0.095, theta_s: 0.41, alpha: 0.019, n: 1.31, Ks: 6.24 },
+  "silty clay loam":{ theta_r: 0.089, theta_s: 0.43, alpha: 0.010, n: 1.23, Ks: 1.68 },
+  "sandy clay":     { theta_r: 0.100, theta_s: 0.38, alpha: 0.027, n: 1.23, Ks: 2.88 },
+  "silty clay":     { theta_r: 0.070, theta_s: 0.36, alpha: 0.005, n: 1.09, Ks: 0.48 },
+  "clay":           { theta_r: 0.068, theta_s: 0.38, alpha: 0.008, n: 1.09, Ks: 4.80 },
 };
 const presetNames = Object.keys(presets);
 
 function applyPreset(idx: number, name: string) {
-  if (!scen.value) return;
+  if (!scen.value || !name) return;
   const p = presets[name];
   if (!p) return;
   Object.assign(scen.value.materials[idx], p);
-  // Sync hysteresis bounds: tha/thm default to thr/ths
-  scen.value.materials[idx].tha = scen.value.materials[idx].thr;
-  scen.value.materials[idx].thm = scen.value.materials[idx].ths;
-  // Kk defaults to Ks
-  scen.value.materials[idx].Kk  = scen.value.materials[idx].Ks;
-  scen.value.materials[idx].thk = scen.value.materials[idx].ths;
   markDirty();
 }
 
 const tprintStr = computed({
-  get: () => scen.value?.TPrint.join(" ") ?? "",
+  get: () => scen.value?.time.print_times.join(" ") ?? "",
   set: (s: string) => {
     if (!scen.value) return;
     const xs = s.split(/[\s,]+/).filter(Boolean).map(Number).filter(n => !isNaN(n));
-    scen.value.TPrint = xs;
+    scen.value.time.print_times = xs;
     markDirty();
   },
 });
 
-// Validation errors per field
+const dim = computed(() => scen.value?.geometry.kind ?? "1d");
+
+const numNodes = computed(() => {
+  if (!scen.value) return 0;
+  const g: any = scen.value.geometry;
+  if (g.kind === "1d") return (g.z ?? []).length;
+  if (g.kind === "2d" || g.kind === "3d") return (g.x ?? []).length;
+  return 0;
+});
+
+const numElements = computed(() => {
+  if (!scen.value) return 0;
+  const g: any = scen.value.geometry;
+  if (g.kind === "2d") return (g.elements ?? []).length;
+  if (g.kind === "3d") return (g.cells ?? []).length;
+  return 0;
+});
+
+// Cross-field validation in the unified shape
 const problems = computed(() => {
   const ps: string[] = [];
   const s = scen.value;
   if (!s) return ps;
   for (let i = 0; i < s.materials.length; i++) {
     const m = s.materials[i];
-    if (m.thr >= m.ths) ps.push(`Material ${i+1}: θr ≥ θs (${m.thr} ≥ ${m.ths})`);
-    if (m.n <= 1)        ps.push(`Material ${i+1}: n must be > 1 (got ${m.n})`);
-    if (m.alpha <= 0)    ps.push(`Material ${i+1}: α must be > 0`);
-    if (m.Ks <= 0)       ps.push(`Material ${i+1}: Ks must be > 0`);
+    if (m.theta_r >= m.theta_s) ps.push(`Material ${i+1}: θr ≥ θs (${m.theta_r} ≥ ${m.theta_s})`);
+    if (m.n <= 1)                ps.push(`Material ${i+1}: n must be > 1 (got ${m.n})`);
+    if (m.alpha <= 0)            ps.push(`Material ${i+1}: α must be > 0`);
+    if (m.Ks <= 0)               ps.push(`Material ${i+1}: Ks must be > 0`);
   }
-  if (s.time.dtMin >= s.time.dt)      ps.push(`time: dtMin ≥ dt`);
-  if (s.time.dt > s.time.dtMaxW)       ps.push(`time: dt > dtMaxW`);
-  if (s.time.dMul <= 1)               ps.push(`time: dMul should be > 1`);
-  if (s.time.dMul2 >= 1)               ps.push(`time: dMul2 should be < 1`);
+  const t = s.time;
+  if (t.dt_min >= t.dt)   ps.push(`time: dt_min ≥ dt`);
+  if (t.dt > t.dt_max)    ps.push(`time: dt > dt_max`);
+  if (t.dt_mul <= 1)      ps.push(`time: dt_mul should be > 1`);
+  if (t.dt_mul2 >= 1)     ps.push(`time: dt_mul2 should be < 1`);
   return ps;
 });
+
+// Material extras (Vogel-Cislerova) shown only when materially different
+// from defaults. Avoids cluttering the row with redundant fields.
+function showVC(m: CanonicalMaterial): boolean {
+  return m.theta_a !== null || m.theta_m !== null
+      || m.theta_k !== null || m.Kk !== null;
+}
 </script>
 
 <template>
   <div class="panel editor-panel">
     <div class="row" style="justify-content: space-between">
-      <div class="title">Parameter editor</div>
+      <div class="title">
+        Parameter editor
+        <span v-if="scen" class="muted small mono" style="margin-left: 8px">
+          [{{ dim.toUpperCase() }}] {{ numNodes }} nodes<span v-if="numElements"> · {{ numElements }} elems</span>
+        </span>
+      </div>
       <div class="row small" style="gap: 6px">
         <button class="secondary" @click="reload" :disabled="!scen || busy">Reload</button>
         <button @click="save" :disabled="!scen || !dirty || busy || problems.length > 0">
@@ -145,47 +174,55 @@ const problems = computed(() => {
       {{ err ?? (props.scenarioPath ? "loading…" : "no scenario selected") }}
     </div>
     <div v-else class="form-scroll">
+      <!-- Meta + units shared across all dimensions -->
       <section class="grp">
         <div class="grp-h">Heading</div>
-        <input type="text" v-model="scen.heading" @input="markDirty" class="wide" />
+        <input type="text" v-model="scen.meta.name" @input="markDirty" class="wide" />
         <div class="row small" style="gap: 4px; margin-top: 4px">
-          <span class="muted">units:</span>
-          <input v-for="(_, i) in scen.units" :key="i"
-                 v-model="scen.units[i]" @input="markDirty"
-                 class="unit" />
+          <span class="muted">L</span>
+          <input v-model="scen.units.length" @input="markDirty" class="unit" />
+          <span class="muted">T</span>
+          <input v-model="scen.units.time"   @input="markDirty" class="unit" />
+          <span class="muted">M</span>
+          <input v-model="scen.units.mass"   @input="markDirty" class="unit" />
         </div>
       </section>
 
+      <!-- Flow geometry + solver -->
       <section class="grp">
         <div class="grp-h">Flow geometry &amp; solver</div>
         <div class="grid2">
-          <label>Kat
-            <select v-model.number="scen.config.KAT" @change="markDirty">
-              <option :value="0">0 — horizontal plane</option>
-              <option :value="1">1 — axisymmetric vertical</option>
-              <option :value="2">2 — vertical plane</option>
+          <label>Geometry
+            <select v-model="scen.solver.geometry_kind" @change="markDirty">
+              <option value="horizontal">horizontal plane</option>
+              <option value="axisymmetric">axisymmetric vertical</option>
+              <option value="vertical">vertical plane</option>
             </select>
           </label>
           <label>MaxIt
-            <input type="number" v-model.number="scen.config.MaxIt" @input="markDirty" min="1" />
+            <input type="number" v-model.number="scen.solver.max_picard" @input="markDirty" min="1" />
           </label>
           <label>TolTh
-            <input type="number" v-model.number="scen.config.TolTh" @input="markDirty" step="0.0001" />
+            <input type="number" v-model.number="scen.solver.tol_theta" @input="markDirty" step="0.0001" />
           </label>
           <label>TolH
-            <input type="number" v-model.number="scen.config.TolH" @input="markDirty" step="0.001" />
+            <input type="number" v-model.number="scen.solver.tol_h" @input="markDirty" step="0.001" />
           </label>
         </div>
         <div class="flag-grid">
-          <label v-for="key in ['lWat','lChem','CheckF','ShortF','FluxF','AtmInF','SeepF','FreeD','DrainF'] as const"
-                 :key="key" class="flag">
-            <input type="checkbox" :checked="(scen!.config as any)[key]"
-                   @change="(e) => { (scen!.config as any)[key] = (e.target as HTMLInputElement).checked; markDirty(); }" />
-            {{ key }}
+          <label v-for="key in ([
+            'water_flow','solute_transport','heat_transport','root_uptake',
+            'atmospheric_bc','free_drainage','seepage_face','subsurface_drain',
+            'short_output','flux_output','check_output','hysteresis',
+          ] as const)" :key="key" class="flag">
+            <input type="checkbox" :checked="(scen!.solver as any)[key]"
+                   @change="(e) => { (scen!.solver as any)[key] = (e.target as HTMLInputElement).checked; markDirty(); }" />
+            {{ key.replace(/_/g, ' ') }}
           </label>
         </div>
       </section>
 
+      <!-- Materials table -->
       <section class="grp">
         <div class="row grp-h" style="justify-content: space-between">
           <span>Materials ({{ scen.materials.length }})</span>
@@ -195,8 +232,8 @@ const problems = computed(() => {
           <thead>
             <tr>
               <th>#</th>
-              <th>θr</th><th>θs</th><th>tha</th><th>thm</th>
-              <th>α (1/cm)</th><th>n</th><th>Ks (cm/T)</th><th>Kk</th><th>thk</th>
+              <th>θr</th><th>θs</th>
+              <th>α (1/L)</th><th>n</th><th>Ks (L/T)</th><th>l</th>
               <th>preset</th>
               <th></th>
             </tr>
@@ -204,11 +241,12 @@ const problems = computed(() => {
           <tbody>
             <tr v-for="(m, i) in scen.materials" :key="i">
               <td>{{ i + 1 }}</td>
-              <td v-for="k in (['thr','ths','tha','thm','alpha','n','Ks','Kk','thk'] as const)" :key="k">
+              <td v-for="k in (['theta_r','theta_s','alpha','n','Ks','l'] as const)" :key="k">
                 <input type="number" step="any" v-model.number="m[k]" @input="markDirty" />
               </td>
               <td>
-                <select @change="(e) => applyPreset(i, (e.target as HTMLSelectElement).value)">
+                <select :value="''"
+                        @change="(e) => applyPreset(i, (e.target as HTMLSelectElement).value)">
                   <option value="">choose…</option>
                   <option v-for="n in presetNames" :key="n" :value="n">{{ n }}</option>
                 </select>
@@ -222,33 +260,66 @@ const problems = computed(() => {
         </table>
       </section>
 
+      <!-- Time control -->
       <section class="grp">
         <div class="grp-h">Time control</div>
         <div class="grid5">
           <label>dt
             <input type="number" step="any" v-model.number="scen.time.dt" @input="markDirty" />
           </label>
-          <label>dtMin
-            <input type="number" step="any" v-model.number="scen.time.dtMin" @input="markDirty" />
+          <label>dt_min
+            <input type="number" step="any" v-model.number="scen.time.dt_min" @input="markDirty" />
           </label>
-          <label>dtMaxW
-            <input type="number" step="any" v-model.number="scen.time.dtMaxW" @input="markDirty" />
+          <label>dt_max
+            <input type="number" step="any" v-model.number="scen.time.dt_max" @input="markDirty" />
           </label>
-          <label>dMul
-            <input type="number" step="any" v-model.number="scen.time.dMul" @input="markDirty" />
+          <label>dt_mul
+            <input type="number" step="any" v-model.number="scen.time.dt_mul" @input="markDirty" />
           </label>
-          <label>dMul2
-            <input type="number" step="any" v-model.number="scen.time.dMul2" @input="markDirty" />
+          <label>dt_mul2
+            <input type="number" step="any" v-model.number="scen.time.dt_mul2" @input="markDirty" />
+          </label>
+        </div>
+        <div class="grid2" style="margin-top: 6px">
+          <label>t_init
+            <input type="number" step="any" v-model.number="scen.time.t_init" @input="markDirty" />
+          </label>
+          <label>t_max
+            <input type="number" step="any" v-model.number="scen.time.t_max" @input="markDirty" />
           </label>
         </div>
         <div class="row" style="margin-top: 6px">
           <label class="wide">
-            TPrint (space- or comma-separated print times)
+            Print times (space- or comma-separated)
             <input type="text" v-model="tprintStr" class="mono wide" />
           </label>
         </div>
       </section>
 
+      <!-- Geometry summary (read-only for now) -->
+      <section class="grp" v-if="scen.geometry">
+        <div class="grp-h">Geometry summary</div>
+        <div class="muted small mono">
+          <div v-if="dim === '1d'">
+            1D profile · {{ numNodes }} nodes,
+            depth {{ (scen.geometry as any).z?.[0] }}
+            → {{ (scen.geometry as any).z?.[(scen.geometry as any).z?.length - 1] }}
+          </div>
+          <div v-else-if="dim === '2d'">
+            2D FE mesh · {{ numNodes }} nodes · {{ numElements }} cells ·
+            {{ ((scen.geometry as any).boundary_nodes ?? []).length }} boundary nodes
+          </div>
+          <div v-else>
+            3D mesh · {{ numNodes }} nodes · {{ numElements }} cells
+          </div>
+          <div style="margin-top: 4px; color: var(--muted)">
+            (mesh editing not yet exposed — edit through the original
+             GRID.IN / Profile.dat and re-import)
+          </div>
+        </div>
+      </section>
+
+      <!-- Validation -->
       <section v-if="problems.length" class="problems">
         <div class="grp-h">Problems</div>
         <ul>
@@ -307,7 +378,7 @@ const problems = computed(() => {
 }
 .flag-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 3px 6px;
   margin-top: 6px;
   font-size: 11px;
@@ -323,7 +394,7 @@ const problems = computed(() => {
 }
 .mat-tbl th { background: var(--panel-2); color: var(--muted); font-weight: 600; }
 .mat-tbl input {
-  width: 55px; font-family: ui-monospace, Menlo, monospace;
+  width: 60px; font-family: ui-monospace, Menlo, monospace;
   font-size: 10.5px; padding: 2px 3px; border: none; background: transparent;
   color: var(--text); text-align: right;
 }
