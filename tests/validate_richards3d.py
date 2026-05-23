@@ -79,6 +79,54 @@ def run_case(element: str, lump: bool, *, nz: int = 21, t_end: float = 0.05):
     return z[midx], h_final[midx], th_final[midx]
 
 
+def write_vtu_snapshots(out_dir: Path):
+    """Run a single hex-mesh case and dump VTU snapshots so the GUI's
+    3D viewer has something interesting to render."""
+    from swms2d.mesh_io import make_box_mesh_3d, timeseries_to_vtk_series_3d
+    from swms2d.richards3d import (RichardsState3D, evaluate_KCQ_3d,
+                                   integrate_3d)
+    from swms2d.dataclasses import SoilMaterial
+    box = make_box_mesh_3d(nx=8, ny=8, nz=25, lx=0.4, ly=0.4, lz=1.0,
+                           element="hex")
+    skmesh = box["skmesh"]
+    N = skmesh.p.shape[1]
+    z = skmesh.p[2]
+    mat = SoilMaterial(
+        ths=0.430, thr=0.078, alpha=0.036, n=1.56,
+        Ks=0.2496, Kk=0.2496, thk=0.430, tha=0.078, thm=0.430,
+    )
+    h0 = np.full(N, -200.0, np.float64)
+    top = np.where(np.isclose(z, z.max()))[0]
+    h0[top] = 0.0
+    matnum = np.ones(N, dtype=np.int32)
+    _, _, th0 = evaluate_KCQ_3d(h0, matnum, [mat])
+    state = RichardsState3D(
+        hNew=h0.copy(), hOld=h0.copy(),
+        ThNew=th0.copy(), ThOld=th0.copy(),
+        MatNum=matnum,
+    )
+    snap_times = [0.005, 0.015, 0.03, 0.05, 0.08, 0.12]
+    h_final, th_final, snapshots = integrate_3d(
+        skmesh, state, [mat],
+        t_end=0.12, dt_init=1e-3,
+        dirich_nodes=top.astype(np.int32),
+        dirich_h=np.zeros(top.size),
+        gravity_axis=2, lump=True, dt_max=0.02,
+        max_picard=20, tol_h=0.5,
+        snapshot_times=snap_times,
+    )
+    # snapshots is [(t, h, theta), ...]; meshio wants {name: np.array}
+    series: list[tuple[float, dict]] = []
+    # Include the initial state at t=0 for the slider's "before" view
+    series.append((0.0, {"h": h0.copy(), "theta": th0.copy()}))
+    for t, hs, ths in snapshots:
+        series.append((float(t), {"h": np.asarray(hs).astype(np.float64),
+                                   "theta": np.asarray(ths).astype(np.float64)}))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pvd = timeseries_to_vtk_series_3d(skmesh, out_dir, series, prefix="box3d")
+    print(f"\nWrote {len(series)} VTU snapshots + {pvd.name}")
+
+
 def main():
     results = {}
     for element in ("tetra", "hex"):
@@ -89,6 +137,11 @@ def main():
             results[tag] = (zs, hs, ths)
             print(f"  h range: [{hs.min():.2f}, {hs.max():.2f}]   "
                   f"theta range: [{ths.min():.4f}, {ths.max():.4f}]")
+    # Also drop a VTU series for the 3D GUI viewer to load
+    try:
+        write_vtu_snapshots(ROOT / "tests" / "fixtures" / "richards3d_box" / "out")
+    except Exception as e:
+        print(f"  (vtu export skipped: {e})")
 
     # Compare lumped vs consistent on the same element type
     print("\n== max |Δh| between lumped and consistent on same element ==")

@@ -142,10 +142,20 @@ pub async fn start_simulation(
 ) -> Result<JobMeta, String> {
     let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
     let input_dir = PathBuf::from(&args.input_dir);
+    // 3D runs write VTU snapshots to a fixed location under the repo;
+    // 1D/2D default to <input_dir>/out next to their inputs.
     let output_dir = args
         .output_dir
         .map(PathBuf::from)
-        .unwrap_or_else(|| input_dir.join("out"));
+        .unwrap_or_else(|| {
+            if args.kind == "richards3d" || args.kind == "3d" {
+                scenarios::repo_root()
+                    .join("tests").join("fixtures")
+                    .join("richards3d_box").join("out")
+            } else {
+                input_dir.join("out")
+            }
+        });
     std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
 
     // All three sims dispatch through the unified `hydrus` CLI

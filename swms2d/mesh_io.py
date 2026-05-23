@@ -220,7 +220,8 @@ def _mesh_to_meshio(mesh: Mesh):
 def write_vtk(mesh: Mesh, path: Path | str) -> None:
     """Write just the mesh geometry to a VTK / VTU / XDMF file (no fields)."""
     m = _mesh_to_meshio(mesh)
-    m.write(str(path))
+    # Write ASCII so the GUI's inline TS parser can read it.
+    m.write(str(path), binary=False)
 
 
 def snapshot_to_vtk(mesh: Mesh,
@@ -253,7 +254,8 @@ def snapshot_to_vtk(mesh: Mesh,
     point_data = {name: np.asarray(arr).astype(np.float64)
                   for name, arr in fields.items()}
     m = meshio.Mesh(points=pts, cells=cells, point_data=point_data)
-    m.write(str(path))
+    # Write ASCII so the GUI's inline TS parser can read it.
+    m.write(str(path), binary=False)
 
 
 # ============================================================================
@@ -355,7 +357,8 @@ def snapshot_to_vtk_3d(skmesh,
     point_data = {name: np.asarray(arr).astype(np.float64)
                   for name, arr in fields.items()}
     m = meshio.Mesh(points=pts, cells=cells, point_data=point_data)
-    m.write(str(path))
+    # Write ASCII so the GUI's inline TS parser can read it.
+    m.write(str(path), binary=False)
 
 
 def timeseries_to_vtk_series_3d(skmesh,

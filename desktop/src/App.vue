@@ -36,6 +36,12 @@ function onScenarioSelected(path: string, kind: string) {
   } else {
     editorPath.value = null;
   }
+  // Auto-switch right-panel tab to the most useful view per scenario
+  if (kind === "richards3d" || kind === "3d") {
+    rightTab.value = "3d";
+  } else if (kind === "swms2d" || kind === "2d") {
+    rightTab.value = "editor";
+  }
 }
 
 onMounted(async () => {
