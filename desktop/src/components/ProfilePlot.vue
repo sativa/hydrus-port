@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, watch, computed, onMounted, onBeforeUnmount } from "vue";
 // @ts-ignore — plotly.js-dist-min ships JS only
 import Plotly from "plotly.js-dist-min";
 import { api, type JobMeta, type OutputFile, type Series } from "../api";
+import { theme, plotlyLayout } from "../theme";
 
 const props = defineProps<{ job: JobMeta | null }>();
 const plotDiv = ref<HTMLDivElement | null>(null);
@@ -13,14 +14,8 @@ const xCol = ref<number>(0);
 const yCols = ref<number[]>([]);
 const err = ref<string | null>(null);
 
-const dark = {
-  paper_bgcolor: "#161b22",
-  plot_bgcolor: "#0d1117",
-  font: { color: "#c9d1d9", size: 11 },
-  xaxis: { gridcolor: "#30363d", zerolinecolor: "#30363d" },
-  yaxis: { gridcolor: "#30363d", zerolinecolor: "#30363d" },
-  margin: { l: 50, r: 20, t: 24, b: 40 },
-};
+const dark = computed(() => plotlyLayout());
+watch(theme, draw);
 
 watch(
   () => [props.job?.id, props.job?.status, props.job?.finished_at_ms],
@@ -76,9 +71,9 @@ function draw() {
     type: "scattergl",
   }));
   Plotly.react(plotDiv.value, traces, {
-    ...dark,
-    xaxis: { ...dark.xaxis, title: s.headers[xCol.value] ?? "x" },
-    yaxis: { ...dark.yaxis, title: "value" },
+    ...dark.value,
+    xaxis: { ...dark.value.xaxis, title: s.headers[xCol.value] ?? "x" },
+    yaxis: { ...dark.value.yaxis, title: "value" },
     showlegend: true,
     legend: { font: { size: 10 } },
     autosize: true,

@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick } from "vue"
 // @ts-ignore
 import Plotly from "plotly.js-dist-min";
 import { api, type JobMeta, type NodInfSeries, type OutputFile } from "../api";
+import { theme, plotlyLayout } from "../theme";
 
 const props = defineProps<{ job: JobMeta | null }>();
 
@@ -74,14 +75,9 @@ watch(tIndex, () => {
   updateScrubLine();
 });
 
-const darkLayout = {
-  paper_bgcolor: "#161b22",
-  plot_bgcolor: "#0d1117",
-  font: { color: "#c9d1d9", size: 11 },
-  xaxis: { gridcolor: "#30363d", zerolinecolor: "#30363d" },
-  yaxis: { gridcolor: "#30363d", zerolinecolor: "#30363d" },
-  margin: { l: 50, r: 16, t: 24, b: 36 },
-};
+const darkLayout = computed(() => plotlyLayout());
+// Re-render charts when theme flips so paper/grid colors track.
+watch(theme, () => { drawHeat(); drawProfile(); });
 
 function drawHeat() {
   if (!heatEl.value || !series.value) return;
@@ -111,9 +107,9 @@ function drawHeat() {
     heatEl.value,
     [heat, scrub],
     {
-      ...darkLayout,
-      xaxis: { ...darkLayout.xaxis, title: "time" },
-      yaxis: { ...darkLayout.yaxis, title: "depth" },
+      ...darkLayout.value,
+      xaxis: { ...darkLayout.value.xaxis, title: "time" },
+      yaxis: { ...darkLayout.value.yaxis, title: "depth" },
       title: { text: `${varName.value}(z, t)`, font: { size: 13 } },
       showlegend: false,
     },
@@ -159,9 +155,9 @@ function drawProfile() {
     profileEl.value,
     [trace],
     {
-      ...darkLayout,
-      xaxis: { ...darkLayout.xaxis, title: varName.value },
-      yaxis: { ...darkLayout.yaxis, title: "depth" },
+      ...darkLayout.value,
+      xaxis: { ...darkLayout.value.xaxis, title: varName.value },
+      yaxis: { ...darkLayout.value.yaxis, title: "depth" },
       title: {
         text: `profile @ t=${s.times[ti].toFixed(3)}`,
         font: { size: 13 },
@@ -203,9 +199,9 @@ async function drawFlux(path: string) {
       fluxEl.value,
       traces,
       {
-        ...darkLayout,
-        xaxis: { ...darkLayout.xaxis, title: "time" },
-        yaxis: { ...darkLayout.yaxis, title: "" },
+        ...darkLayout.value,
+        xaxis: { ...darkLayout.value.xaxis, title: "time" },
+        yaxis: { ...darkLayout.value.yaxis, title: "" },
         title: { text: "boundary fluxes", font: { size: 12 } },
         showlegend: true,
         legend: { font: { size: 10 }, orientation: "h", y: 1.15 },

@@ -3,6 +3,7 @@ import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from "vue"
 // @ts-ignore
 import Plotly from "plotly.js-dist-min";
 import { api, type JobMeta, type Swms2dMesh, type Swms2dField } from "../api";
+import { theme, plotlyLayout } from "../theme";
 
 const props = defineProps<{ job: JobMeta | null }>();
 
@@ -155,15 +156,8 @@ function getLookup(m: Swms2dMesh) {
   return cachedLookup;
 }
 
-const darkLayout = {
-  paper_bgcolor: "#161b22",
-  plot_bgcolor: "#0d1117",
-  font: { color: "#c9d1d9", size: 11 },
-  xaxis: { gridcolor: "#30363d", zerolinecolor: "#30363d",
-           title: "x", scaleanchor: undefined as any },
-  yaxis: { gridcolor: "#30363d", zerolinecolor: "#30363d", title: "z" },
-  margin: { l: 50, r: 18, t: 24, b: 36 },
-};
+const darkLayout = computed(() => plotlyLayout());
+watch(theme, () => drawHeat());
 
 function drawHeat() {
   if (!heatEl.value || !mesh.value || !currentField.value) return;
@@ -200,9 +194,9 @@ function drawHeat() {
     connectgaps: false,
   };
   const layout: any = {
-    ...darkLayout,
-    xaxis: { ...darkLayout.xaxis, title: "x" },
-    yaxis: { ...darkLayout.yaxis, title: "z" },
+    ...darkLayout.value,
+    xaxis: { ...darkLayout.value.xaxis, title: "x" },
+    yaxis: { ...darkLayout.value.yaxis, title: "z" },
     title: { text: `${varName.value} @ t=${times.value[tIndex.value]?.toFixed(2)}`, font: { size: 12 } },
   };
   Plotly.react(heatEl.value, [trace], layout, { responsive: true, displaylogo: false });

@@ -10,6 +10,7 @@ import Hovmoller1D from "./components/Hovmoller1D.vue";
 import MeshContour2D from "./components/MeshContour2D.vue";
 import ScenarioEditor from "./components/ScenarioEditor.vue";
 import { api, type JobMeta, type PythonInfo } from "./api";
+import { theme, toggleTheme } from "./theme";
 
 const py = ref<PythonInfo | null>(null);
 const py_err = ref<string | null>(null);
@@ -27,9 +28,10 @@ const isTwoDimensional = computed(() => {
 const rightTab = ref<"3d" | "editor">("editor");
 const editorPath = ref<string | null>(null);
 function onScenarioSelected(path: string, kind: string) {
-  // Editor only makes sense for 1d/2d (SELECTOR.IN-based scenarios)
-  if (kind === "hydrus1d" || kind === "1d"
-      || kind === "swms2d" || kind === "2d") {
+  // The editor's serializer (swms2d/input.py write_selector) currently
+  // covers SWMS_2D's SELECTOR.IN format. HYDRUS-1D's Selector.in is a
+  // different schema and is read-only in the editor until P3 extends.
+  if (kind === "swms2d" || kind === "2d") {
     editorPath.value = path;
   } else {
     editorPath.value = null;
@@ -101,15 +103,20 @@ function onJobUpdated(j: JobMeta) {
   <div class="layout">
     <header class="topbar">
       <div class="brand">HYDRUS Port</div>
-      <div class="muted mono small">
-        <span v-if="py">
-          {{ py.executable }} · {{ py.version }} · root {{ py.repo_root }}
-        </span>
-        <span v-else-if="py_err" class="status-failed">{{ py_err }}</span>
-        <span v-else>detecting python…</span>
-        <span v-if="autorun_msg" style="margin-left: 10px; color: #d29922;">
-          [{{ autorun_msg }}]
-        </span>
+      <div class="row" style="gap: 14px">
+        <div class="muted mono small">
+          <span v-if="py">
+            {{ py.executable }} · {{ py.version }} · root {{ py.repo_root }}
+          </span>
+          <span v-else-if="py_err" class="status-failed">{{ py_err }}</span>
+          <span v-else>detecting python…</span>
+          <span v-if="autorun_msg" style="margin-left: 10px; color: var(--warn);">
+            [{{ autorun_msg }}]
+          </span>
+        </div>
+        <button class="theme-btn" @click="toggleTheme" :title="`switch to ${theme === 'dark' ? 'light' : 'dark'} theme`">
+          {{ theme === "dark" ? "☀ light" : "☾ dark" }}
+        </button>
       </div>
     </header>
 
@@ -202,4 +209,14 @@ section {
   border-bottom-color: var(--accent);
 }
 .tab:hover { color: var(--text); }
+.theme-btn {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+  font-weight: 500;
+}
+.theme-btn:hover { border-color: var(--accent); color: var(--accent); }
 </style>

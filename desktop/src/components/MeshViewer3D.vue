@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { api, type JobMeta } from "../api";
 import { parseVtu, type VtuMesh } from "../vtu";
+import { theme, cssVar } from "../theme";
 
 const props = defineProps<{ job: JobMeta | null }>();
 const wrap = ref<HTMLDivElement | null>(null);
@@ -35,6 +36,11 @@ watch(currentPath, async (p) => {
 
 watch(field, () => {
   if (current.value) renderMesh(current.value);
+});
+
+watch(theme, () => {
+  if (renderer) renderer.setClearColor(theme.value === "light" ? 0xffffff : 0x0d1117);
+  void cssVar; // referenced for potential future shader uniforms
 });
 
 async function refresh() {
@@ -78,7 +84,7 @@ function ensureScene() {
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(w, h);
-  renderer.setClearColor(0x0d1117);
+  renderer.setClearColor(theme.value === "light" ? 0xffffff : 0x0d1117);
   wrap.value.appendChild(renderer.domElement);
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(50, w / h, 0.001, 1000);
