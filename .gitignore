@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# HYDRUS scratch (we keep tests/fixtures/ which is small and checked in)
+/tmp_runs/
+
+# Tauri / Vite desktop build artefacts
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/Cargo.lock

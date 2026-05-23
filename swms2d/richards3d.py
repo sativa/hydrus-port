@@ -46,6 +46,7 @@ try:
                        BilinearForm, LinearForm,
                        condense, solve)
     from skfem.helpers import dot, grad
+    import scipy.sparse as _sp
     _SKFEM_OK = True
 except ImportError:
     _SKFEM_OK = False
@@ -132,6 +133,7 @@ def picard_step_3d(skmesh,
                    dirich_h: NDArray[np.float64],
                    Q_bc: NDArray[np.float64],
                    gravity_axis: int = 2,
+                   lump: bool = True,
                    ) -> NDArray[np.float64]:
     """One Picard linear solve in 3D.
 
@@ -139,21 +141,25 @@ def picard_step_3d(skmesh,
     for z+up in (x, y, z) layout). Gravity contributes
     `∫ K · (∂z/∂x_i) · ∂φ/∂x_i dV`, which reduces to integrating
     `K · ∂φ/∂z_axis`.
+
+    `lump`: when True (default, matches SWMS_2D Fortran behaviour),
+    the C/dt mass matrix is row-sum lumped to a diagonal. This
+    stabilises sharp wetting fronts and prevents the spurious
+    oscillations the consistent mass matrix produces near
+    discontinuities. Set False for academic comparison only.
     """
     _require_skfem()
-    dim = skmesh.p.shape[0]   # spatial dimension
 
     @BilinearForm
     def stiffness(u, v, w):
         return w["K"] * dot(grad(u), grad(v))
 
     @BilinearForm
-    def mass_lumped(u, v, w):
+    def mass(u, v, w):
         return w["C_over_dt"] * u * v
 
     @LinearForm
     def gravity(v, w):
-        # Gravity unit vector: e_z (=(0,0,1) in 3D, (0,1) in 2D).
         return w["K"] * grad(v)[gravity_axis]
 
     @LinearForm
@@ -166,7 +172,12 @@ def picard_step_3d(skmesh,
     dth_dt_int = basis.interpolate((Th_n - Th_old) / dt)
 
     A_stiff = stiffness.assemble(basis, K=K_int)
-    M_mass  = mass_lumped.assemble(basis, C_over_dt=C_dt_int)
+    M_mass  = mass.assemble(basis, C_over_dt=C_dt_int)
+    if lump:
+        # Row-sum lumping: replace M with diag(M·1). For P1/Hex1, this
+        # is exactly the nodal-quadrature mass (positive diagonal, no
+        # off-diag coupling) used by SWMS_2D and HYDRUS Fortran.
+        M_mass = _sp.diags(np.asarray(M_mass.sum(axis=1)).ravel())
     b_grav  = gravity.assemble(basis, K=K_int)
     b_stor  = storage_rhs.assemble(
         basis, C_h_over_dt=Ch_dt_int, theta_diff_over_dt=dth_dt_int,
@@ -197,6 +208,7 @@ def solve_step_3d(skmesh,
                   gravity_axis: int = 2,
                   max_picard: int = 30,
                   tol_h: float = 0.01,
+                  lump: bool = True,
                   ) -> tuple[NDArray[np.float64], NDArray[np.float64], int, bool]:
     """Solve one dt step. Returns (h_new, theta_new, n_iter, converged)."""
     _require_skfem()
@@ -208,7 +220,7 @@ def solve_step_3d(skmesh,
         K_n, C_n, Th_n = evaluate_KCQ_3d(h_iter, state.MatNum, materials)
         h_new = picard_step_3d(skmesh, basis, K_n, C_n, Th_n, state.ThOld,
                                h_iter, dt, dirich_nodes, dirich_h, Q_bc,
-                               gravity_axis=gravity_axis)
+                               gravity_axis=gravity_axis, lump=lump)
         np.clip(h_new, -1e10, 1e10, out=h_new)
         if np.max(np.abs(h_new - h_iter)) < tol_h:
             _, _, Th_final = evaluate_KCQ_3d(h_new, state.MatNum, materials)
@@ -233,6 +245,7 @@ def integrate_3d(skmesh,
                  dMul2: float = 0.7,
                  max_picard: int = 30,
                  tol_h: float = 0.01,
+                 lump: bool = True,
                  snapshot_times: Optional[list[float]] = None,
                  ) -> tuple[NDArray[np.float64], NDArray[np.float64],
                             list[tuple[float, NDArray[np.float64],
@@ -262,7 +275,7 @@ def integrate_3d(skmesh,
         h_new, th_new, it, conv = solve_step_3d(
             skmesh, state, materials, dt_use,
             dirich_nodes, dirich_h, Q_bc, gravity_axis,
-            max_picard=max_picard, tol_h=tol_h,
+            max_picard=max_picard, tol_h=tol_h, lump=lump,
         )
         if not conv:
             if dt_use > dt_min:

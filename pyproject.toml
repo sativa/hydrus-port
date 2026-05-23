@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hydrus-port"
+version = "0.2.0"
+description = "Python ports of HYDRUS-1D and SWMS_2D with a 3D scikit-fem extension"
+readme = "swms2d/README.md"
+license = { text = "CC0-1.0" }
+requires-python = ">=3.10"
+authors = [
+    { name = "zhangfeng", email = "zhangfeng04@gmail.com" },
+]
+keywords = ["hydrus", "swms", "richards", "soil-physics", "fem", "vadose-zone"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: CC0 1.0 Universal (CC0 1.0) Public Domain Dedication",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Hydrology",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+fem3d = [
+    "scikit-fem>=10.0",
+    "meshio>=5.3",
+]
+viz = [
+    "matplotlib>=3.7",
+    "pyvista>=0.43",
+]
+gui = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.5",
+]
+dev = [
+    "pytest>=7.4",
+    "hatchling>=1.21",
+]
+
+[project.urls]
+Homepage = "https://github.com/zhangfeng/hydrus-port"
+Issues = "https://github.com/zhangfeng/hydrus-port/issues"
+
+[project.scripts]
+hydrus1d = "hydrus1d.hydrus:main"
+swms2d   = "swms2d.cli:main"
+hydrus-port-serve = "hydrus_port_server.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hydrus1d", "swms2d", "hydrus_port_server"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "hydrus1d/",
+    "swms2d/",
+    "hydrus_port_server/",
+    "tests/",
+    "DOCS/",
+    "pyproject.toml",
+]
+exclude = [
+    "**/__pycache__",
+    "**/*.pyc",
+    "**/.DS_Store",
+    "tests/fixtures/**/*.OUT",
+    "tests/fixtures/**/*.out",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "validate_*.py"]
