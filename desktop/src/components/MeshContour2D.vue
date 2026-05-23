@@ -13,6 +13,7 @@ const fields = ref<Record<string, Swms2dField>>({});
 const varName = ref<"h" | "th">("h");
 const tIndex = ref(0);
 const colormap = ref<string>("Viridis");
+const showStreamlines = ref<boolean>(false);
 const err = ref<string | null>(null);
 
 const colormaps = ["Viridis", "Cividis", "Plasma", "Turbo", "RdBu"];
@@ -31,7 +32,7 @@ async function refresh() {
     const gridPath = `${props.job.input_dir}/GRID.IN`;
     mesh.value = await api.parseSwms2dGrid(gridPath);
     const outs = await api.listOutputFiles(props.job.output_dir);
-    for (const v of ["h", "th"] as const) {
+    for (const v of ["h", "th", "vx", "vz"] as const) {
       const f = outs.find((o) => o.name.toLowerCase() === `${v}.out`);
       if (!f) continue;
       fields.value[v] = await api.parseSwms2dField(f.path, mesh.value.num_np);
@@ -44,6 +45,10 @@ async function refresh() {
       varName.value = fields.value["h"] ? "h" : "th";
     }
     tIndex.value = (fields.value[varName.value]?.times.length ?? 1) - 1;
+    // Default streamlines on whenever velocity fields are available
+    if (fields.value["vx"] && fields.value["vz"]) {
+      showStreamlines.value = true;
+    }
     await nextTick();
     drawHeat();
   } catch (e: any) {
@@ -51,7 +56,7 @@ async function refresh() {
   }
 }
 
-watch([varName, tIndex, colormap], drawHeat);
+watch([varName, tIndex, colormap, showStreamlines], drawHeat);
 
 const currentField = computed(() => {
   const f = fields.value[varName.value];
@@ -193,13 +198,156 @@ function drawHeat() {
     hovertemplate: "x=%{x:.2f}<br>z=%{y:.2f}<br>v=%{z:.3f}<extra></extra>",
     connectgaps: false,
   };
+  const traces: any[] = [trace];
+  if (showStreamlines.value) {
+    const sl = computeStreamlines(m, lookup, xs, zs);
+    if (sl) traces.push(sl);
+  }
   const layout: any = {
     ...darkLayout.value,
     xaxis: { ...darkLayout.value.xaxis, title: "x" },
     yaxis: { ...darkLayout.value.yaxis, title: "z" },
     title: { text: `${varName.value} @ t=${times.value[tIndex.value]?.toFixed(2)}`, font: { size: 12 } },
   };
-  Plotly.react(heatEl.value, [trace], layout, { responsive: true, displaylogo: false });
+  Plotly.react(heatEl.value, traces, layout, { responsive: true, displaylogo: false });
+}
+
+// --- Streamline integration --------------------------------------------
+// Sample (vx, vz) at the current time from fields.vx / fields.vz, seed
+// particles on a coarse grid inside the mesh, integrate trajectories
+// forward and backward via RK2 (Heun's method), render as a single
+// Plotly scatter trace with `null`-separated polylines.
+
+function sampleVector(
+  m: Swms2dMesh,
+  vx: number[], vz: number[],
+  x: number, z: number,
+  tbx0: Float64Array, tbx1: Float64Array,
+  tbz0: Float64Array, tbz1: Float64Array,
+): [number, number] | null {
+  const N = m.triangles.length;
+  for (let t = 0; t < N; t++) {
+    if (x < tbx0[t] || x > tbx1[t] || z < tbz0[t] || z > tbz1[t]) continue;
+    const [a, b, c] = m.triangles[t];
+    const ax = m.nodes_x[a], ay = m.nodes_z[a];
+    const bx = m.nodes_x[b], by = m.nodes_z[b];
+    const cx = m.nodes_x[c], cy = m.nodes_z[c];
+    const denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(denom) < 1e-15) continue;
+    const l0 = ((by - cy) * (x - cx) + (cx - bx) * (z - cy)) / denom;
+    const l1 = ((cy - ay) * (x - cx) + (ax - cx) * (z - cy)) / denom;
+    const l2 = 1 - l0 - l1;
+    if (l0 >= -1e-9 && l1 >= -1e-9 && l2 >= -1e-9) {
+      return [l0 * vx[a] + l1 * vx[b] + l2 * vx[c],
+              l0 * vz[a] + l1 * vz[b] + l2 * vz[c]];
+    }
+  }
+  return null;
+}
+
+function computeStreamlines(
+  m: Swms2dMesh,
+  lookup: (Bary | null)[][],
+  xs: number[], zs: number[],
+): any | null {
+  const vxField = fields.value["vx"];
+  const vzField = fields.value["vz"];
+  if (!vxField || !vzField) return null;
+  // Pick a velocity snapshot near the current time index; the field's
+  // time grid may not match the heatmap's, so use the same index modulo
+  // length (a more careful match would linearly interpolate).
+  const ti = Math.min(tIndex.value, vxField.values.length - 1);
+  const vx = vxField.values[ti];
+  const vz = vzField.values[ti];
+
+  // Precompute triangle AABBs.
+  const N = m.triangles.length;
+  const tbx0 = new Float64Array(N), tbx1 = new Float64Array(N);
+  const tbz0 = new Float64Array(N), tbz1 = new Float64Array(N);
+  for (let t = 0; t < N; t++) {
+    const [a, b, c] = m.triangles[t];
+    const ax = m.nodes_x[a], ay = m.nodes_z[a];
+    const bx = m.nodes_x[b], by = m.nodes_z[b];
+    const cx = m.nodes_x[c], cy = m.nodes_z[c];
+    tbx0[t] = Math.min(ax, bx, cx); tbx1[t] = Math.max(ax, bx, cx);
+    tbz0[t] = Math.min(ay, by, cy); tbz1[t] = Math.max(ay, by, cy);
+  }
+
+  // Estimate step size from mesh extent
+  const x0 = xs[0], xN = xs[xs.length - 1];
+  const z0 = zs[0], zN = zs[zs.length - 1];
+  const ext = Math.max(xN - x0, zN - z0);
+  const dt = ext * 0.005;        // ~200 steps to cross the longer extent
+  const maxSteps = 200;
+
+  // Seed grid: coarser than viz grid (~12 × 8 for typical aspect ratios)
+  const nSeedZ = Math.max(8, Math.min(20, Math.round(zs.length / 14)));
+  const nSeedX = Math.max(6, Math.min(20, Math.round(xs.length / 14)));
+  const xLine: (number | null)[] = [];
+  const zLine: (number | null)[] = [];
+
+  // Find a characteristic velocity magnitude for normalization
+  let vmag = 0;
+  for (let i = 0; i < vx.length; i++) {
+    const m2 = vx[i] * vx[i] + vz[i] * vz[i];
+    if (m2 > vmag) vmag = m2;
+  }
+  vmag = Math.sqrt(vmag) || 1;
+  const stepLen = ext * 0.012; // arc-length-per-step in physical units
+
+  for (let i = 0; i < nSeedX; i++) {
+    for (let j = 0; j < nSeedZ; j++) {
+      const sx = x0 + (xN - x0) * ((i + 0.5) / nSeedX);
+      const sz = z0 + (zN - z0) * ((j + 0.5) / nSeedZ);
+      // Only seed if inside the mesh
+      const v0 = sampleVector(m, vx, vz, sx, sz, tbx0, tbx1, tbz0, tbz1);
+      if (!v0) continue;
+      const traj: [number, number][] = [[sx, sz]];
+      // Forward integration
+      let cx = sx, cz = sz;
+      for (let s = 0; s < maxSteps; s++) {
+        const v = sampleVector(m, vx, vz, cx, cz, tbx0, tbx1, tbz0, tbz1);
+        if (!v) break;
+        const mg = Math.sqrt(v[0]*v[0] + v[1]*v[1]) || 1e-12;
+        const dx = (v[0] / mg) * stepLen, dz_ = (v[1] / mg) * stepLen;
+        // Heun corrector
+        const mx = cx + dx, mz = cz + dz_;
+        const v2 = sampleVector(m, vx, vz, mx, mz, tbx0, tbx1, tbz0, tbz1) ?? v;
+        const mg2 = Math.sqrt(v2[0]*v2[0] + v2[1]*v2[1]) || 1e-12;
+        const ddx = 0.5 * (dx + (v2[0] / mg2) * stepLen);
+        const ddz = 0.5 * (dz_ + (v2[1] / mg2) * stepLen);
+        cx += ddx; cz += ddz;
+        traj.push([cx, cz]);
+      }
+      // Backward integration from seed
+      cx = sx; cz = sz;
+      const back: [number, number][] = [];
+      for (let s = 0; s < maxSteps; s++) {
+        const v = sampleVector(m, vx, vz, cx, cz, tbx0, tbx1, tbz0, tbz1);
+        if (!v) break;
+        const mg = Math.sqrt(v[0]*v[0] + v[1]*v[1]) || 1e-12;
+        const dx = (v[0] / mg) * stepLen, dz_ = (v[1] / mg) * stepLen;
+        cx -= dx; cz -= dz_;
+        back.unshift([cx, cz]);
+      }
+      const full = [...back, ...traj];
+      for (const [px, pz] of full) {
+        xLine.push(px); zLine.push(pz);
+      }
+      xLine.push(null); zLine.push(null);
+    }
+  }
+  // Avoid `void` dimension reads
+  void lookup;
+  void vmag;
+  return {
+    type: "scatter",
+    mode: "lines",
+    x: xLine, y: zLine,
+    line: { color: "rgba(255,255,255,0.55)", width: 0.8 },
+    hoverinfo: "skip",
+    showlegend: false,
+  };
 }
 
 onMounted(() => window.addEventListener("resize", onResize));
@@ -226,6 +374,11 @@ function onResize() {
         <select v-model="colormap">
           <option v-for="c in colormaps" :key="c" :value="c">{{ c }}</option>
         </select>
+        <label class="row small" style="gap: 4px"
+               v-if="fields.vx && fields.vz">
+          <input type="checkbox" v-model="showStreamlines" />
+          streamlines
+        </label>
         <span v-if="mesh" class="muted mono small">
           {{ mesh.num_np }} nodes · {{ mesh.triangles.length }} tris
         </span>
