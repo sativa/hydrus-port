@@ -10,10 +10,13 @@ const props = defineProps<{ job: JobMeta | null }>();
 const heatEl = ref<HTMLDivElement | null>(null);
 const mesh = ref<Swms2dMesh | null>(null);
 const fields = ref<Record<string, Swms2dField>>({});
-const varName = ref<"h" | "th">("h");
+// Default to θ (water content) — what matters for irrigation analysis.
+const varName = ref<"h" | "th">("th");
 const tIndex = ref(0);
 const colormap = ref<string>("Viridis");
 const showStreamlines = ref<boolean>(false);
+const showRootZone = ref<boolean>(true);
+const rootDepth = ref<number>(30);
 const err = ref<string | null>(null);
 const units = ref<{length: string; time: string} | null>(null);
 
@@ -66,7 +69,8 @@ async function refresh() {
   }
 }
 
-watch([varName, tIndex, colormap, showStreamlines], drawHeat);
+watch([varName, tIndex, colormap, showStreamlines,
+       showRootZone, rootDepth], drawHeat);
 
 const currentField = computed(() => {
   const f = fields.value[varName.value];
@@ -212,6 +216,26 @@ function drawHeat() {
   if (showStreamlines.value) {
     const sl = computeStreamlines(m, lookup, xs, zs);
     if (sl) traces.push(sl);
+  }
+  // Root-zone band: a green dashed rectangle covering depths from
+  // the surface down to rootDepth. SWMS uses z positive upward, so
+  // root zone is z ∈ [z_surface - rootDepth, z_surface].
+  if (showRootZone.value) {
+    const zSurface = Math.max(...m.nodes_z);
+    const rootBot  = zSurface - rootDepth.value;
+    const x0 = xs[0], x1 = xs[xs.length - 1];
+    traces.push({
+      type: "scatter",
+      mode: "lines",
+      x: [x0, x1, x1, x0, x0],
+      y: [rootBot, rootBot, zSurface, zSurface, rootBot],
+      fill: "toself",
+      fillcolor: "rgba(63, 185, 80, 0.10)",
+      line: { color: "rgba(63, 185, 80, 0.6)", width: 1, dash: "dot" },
+      name: "root zone",
+      hoverinfo: "skip",
+      showlegend: false,
+    });
   }
   const layout: any = {
     ...darkLayout.value,
@@ -391,6 +415,13 @@ function onResize() {
           <input type="checkbox" v-model="showStreamlines" />
           streamlines
         </label>
+        <label class="row small" style="gap: 4px">
+          <input type="checkbox" v-model="showRootZone" />
+          root&nbsp;zone
+        </label>
+        <input v-if="showRootZone" type="number" min="0" step="1"
+               v-model.number="rootDepth" style="width: 50px"
+               :title="`root depth (${units?.length ?? 'cm'})`" />
         <span v-if="mesh" class="muted mono small">
           {{ mesh.num_np }} nodes · {{ mesh.triangles.length }} tris
         </span>

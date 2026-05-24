@@ -12,12 +12,20 @@ const profileEl = ref<HTMLDivElement | null>(null);
 const fluxEl = ref<HTMLDivElement | null>(null);
 
 const series = ref<NodInfSeries | null>(null);
-const varName = ref<string>("Head");
+// Default to Moisture (θ, water content) — most agronomically meaningful
+// for irrigation analysis. Head (h) is still selectable.
+const varName = ref<string>("Moisture");
 const colormap = ref<string>("Viridis");
 const tIndex = ref<number>(0);
 const err = ref<string | null>(null);
 const fluxFile = ref<OutputFile | null>(null);
 const units = ref<{length: string; time: string} | null>(null);
+// Root zone depth (positive cm into the soil). 0..rootDepth from the
+// surface is the band a crop's roots can actually use.
+const rootDepth = ref<number>(30);
+// Parsed T_LEVEL.OUT time series for water-budget integrations
+const fluxRows = ref<{t: number; values: number[]}[]>([]);
+const fluxHeaders = ref<string[]>([]);
 
 // Best-effort: read the scenario's units so axes can show "time [day]"
 // rather than just "time". Hits api.readScenario when a 1D job runs.
@@ -27,6 +35,71 @@ async function loadUnits() {
     const s = await api.readScenario(props.job.input_dir);
     units.value = { length: s.units.length, time: s.units.time };
   } catch { units.value = null; }
+}
+
+// ----- water budget --------------------------------------------------
+// Integrate θ over depth at the current time:
+//   profile water = ∫₀^L θ(z) dz   ≈   Σ θᵢ · Δz_node
+//   root water    = ∫_root_band θ(z) dz
+// Returns cm (or whatever length unit the scenario uses).
+
+const profileWater = computed(() => integrateTheta(false));
+const rootWater    = computed(() => integrateTheta(true));
+
+function integrateTheta(rootOnly: boolean): number | null {
+  const s = series.value;
+  if (!s) return null;
+  const th = s.vars["Moisture"];
+  if (!th) return null;
+  const depths = s.depths;
+  const ti = tIndex.value;
+  if (ti >= th.length) return null;
+  const row = th[ti];
+  if (!row || row.length !== depths.length) return null;
+  // depths are stored ascending; surface = max(z), bottom = min(z).
+  // For an "in soil" depth d (>=0), absolute z = surface - d.
+  const zSurface = Math.max(...depths);
+  let total = 0;
+  for (let i = 0; i < depths.length; i++) {
+    const depth_into_soil = zSurface - depths[i];  // 0 at surface, +X cm deep
+    if (rootOnly && depth_into_soil > rootDepth.value) continue;
+    // Δz: trapezoid using neighbour spacing
+    const zLo = i > 0 ? (depths[i] + depths[i - 1]) / 2 : depths[i];
+    const zHi = i < depths.length - 1
+      ? (depths[i] + depths[i + 1]) / 2 : depths[i];
+    const dz = zHi - zLo;
+    total += row[i] * dz;
+  }
+  return total;
+}
+
+// Cumulative infiltration / drainage at the current time from T_LEVEL.OUT
+const cumInfil = computed(() => fluxValueAtT("sum_Infil") ?? fluxValueAtT("sum(Infil)"));
+const cumDrain = computed(() => {
+  // sum_vBot is negative when water leaves the bottom — flip to positive
+  const v = fluxValueAtT("sum_vBot") ?? fluxValueAtT("sum(vBot)");
+  return v === null ? null : -v;
+});
+
+function fluxValueAtT(name: string): number | null {
+  if (!fluxRows.value.length) return null;
+  const idx = fluxHeaders.value.findIndex((h) => h === name);
+  if (idx < 0) return null;
+  const t = series.value?.times[tIndex.value] ?? 0;
+  // pick nearest row
+  let best = 0, bestDt = Infinity;
+  for (let i = 0; i < fluxRows.value.length; i++) {
+    const dt = Math.abs(fluxRows.value[i].t - t);
+    if (dt < bestDt) { bestDt = dt; best = i; }
+  }
+  const v = fluxRows.value[best].values[idx];
+  return Number.isFinite(v) ? v : null;
+}
+
+function fmtW(v: number | null): string {
+  if (v === null) return "—";
+  const u = units.value?.length ?? "";
+  return `${v.toFixed(2)} ${u}`;
 }
 
 // HYDRUS-1D NOD_INF column → unit string (in terms of L, T from units)
@@ -62,6 +135,8 @@ async function refresh() {
   err.value = null;
   series.value = null;
   fluxFile.value = null;
+  fluxRows.value = [];
+  fluxHeaders.value = [];
   if (!props.job) return;
   loadUnits();
   try {
@@ -94,7 +169,7 @@ async function refresh() {
   }
 }
 
-watch([varName, colormap], () => {
+watch([varName, colormap, rootDepth], () => {
   drawHeat();
   drawProfile();
 });
@@ -133,16 +208,32 @@ function drawHeat() {
     hoverinfo: "skip",
     showlegend: false,
   };
+  // Root zone band — horizontal band at z ∈ [z_surface - rootDepth, z_surface]
+  const zSurface = Math.max(...s.depths);
+  const rootBottom = zSurface - rootDepth.value;
+  const rootBand = {
+    type: "scatter",
+    mode: "lines",
+    x: [s.times[0], s.times[s.times.length - 1], s.times[s.times.length - 1],
+        s.times[0], s.times[0]],
+    y: [rootBottom, rootBottom, zSurface, zSurface, rootBottom],
+    fill: "toself",
+    fillcolor: "rgba(63, 185, 80, 0.10)",
+    line: { color: "rgba(63, 185, 80, 0.55)", width: 1, dash: "dot" },
+    name: "root zone",
+    hoverinfo: "skip",
+    showlegend: false,
+  };
   Plotly.react(
     heatEl.value,
-    [heat, scrub],
+    [heat, rootBand, scrub],
     {
       ...darkLayout.value,
       xaxis: { ...darkLayout.value.xaxis,
                title: `time${units.value ? ' [' + units.value.time + ']' : ''}` },
       yaxis: { ...darkLayout.value.yaxis,
                title: `depth${units.value ? ' [' + units.value.length + ']' : ''}` },
-      title: { text: `${varName.value}(z, t)`, font: { size: 13 } },
+      title: { text: `${varName.value}(z, t)  ·  root zone shaded`, font: { size: 13 } },
       showlegend: false,
     },
     { responsive: true, displaylogo: false },
@@ -161,10 +252,11 @@ function drawHeat() {
 function updateScrubLine() {
   if (!heatEl.value || !series.value) return;
   const t = series.value.times[tIndex.value];
+  // Traces: [0]=heatmap, [1]=root band, [2]=scrub line. Update [2].
   Plotly.restyle(
     heatEl.value,
     { x: [[t, t]] },
-    [1],
+    [2],
   );
 }
 
@@ -206,6 +298,9 @@ async function drawFlux(path: string) {
   if (!fluxEl.value) return;
   try {
     const ser = await api.parseTable(path);
+    // Cache for water-budget readout
+    fluxHeaders.value = ser.headers;
+    fluxRows.value = ser.rows.map((r) => ({ t: r[0], values: r }));
     // Find columns
     const idx = (name: string) =>
       ser.headers.findIndex((h) => h === name);
@@ -286,7 +381,7 @@ function onResize() {
   <div class="panel hov-panel">
     <div class="row" style="justify-content: space-between; flex-wrap: wrap; gap: 6px">
       <div class="title">1D Hovmöller</div>
-      <div class="row small" style="gap: 8px">
+      <div class="row small" style="gap: 8px; flex-wrap: wrap">
         <span class="muted">var:</span>
         <select v-model="varName" :disabled="!series">
           <option v-for="n in series?.var_names ?? []" :key="n" :value="n">{{ n }}</option>
@@ -295,6 +390,11 @@ function onResize() {
         <select v-model="colormap">
           <option v-for="c in colormaps" :key="c" :value="c">{{ c }}</option>
         </select>
+        <span class="muted">root&nbsp;zone:</span>
+        <input type="number" min="0" step="1" v-model.number="rootDepth"
+               style="width: 50px" :title="`root depth, ${units?.length ?? 'cm'}`" />
+        <span class="muted">{{ units?.length ?? 'cm' }}</span>
+        <span class="muted">·</span>
         <span class="muted">t:</span>
         <span class="mono">{{ currentTime.toFixed(3) }}</span>
       </div>
@@ -312,6 +412,24 @@ function onResize() {
           v-model.number="tIndex"
           style="flex: 1"
         />
+      </div>
+      <div class="budget" style="grid-column: 1 / -1">
+        <div class="budget-cell">
+          <div class="bk">Profile water</div>
+          <div class="bv">{{ fmtW(profileWater) }}</div>
+        </div>
+        <div class="budget-cell">
+          <div class="bk">Root zone (0–{{ rootDepth }})</div>
+          <div class="bv">{{ fmtW(rootWater) }}</div>
+        </div>
+        <div class="budget-cell">
+          <div class="bk">Cumulative infil ↓</div>
+          <div class="bv">{{ fmtW(cumInfil) }}</div>
+        </div>
+        <div class="budget-cell">
+          <div class="bk">Cumulative drain ↓</div>
+          <div class="bv">{{ fmtW(cumDrain) }}</div>
+        </div>
       </div>
       <div ref="fluxEl" class="flux" style="grid-column: 1 / -1"></div>
     </div>
@@ -343,4 +461,17 @@ function onResize() {
   padding: 0 2px;
 }
 .flux { min-height: 0; }
+.budget {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  padding: 6px 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+}
+.budget-cell { padding: 2px 6px; }
+.bk { font-size: 10px; color: var(--muted); }
+.bv { font-size: 13px; font-weight: 600; color: var(--accent-2);
+      font-family: ui-monospace, Menlo, monospace; }
 </style>
