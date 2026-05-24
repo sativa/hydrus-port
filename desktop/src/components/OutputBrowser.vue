@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, watch, onBeforeUnmount } from "vue";
 import { api, type JobMeta, type OutputFile } from "../api";
 
 const props = defineProps<{ job: JobMeta | null }>();
@@ -14,8 +14,7 @@ function formatSize(n: number): string {
 
 async function refresh() {
   err.value = null;
-  files.value = [];
-  if (!props.job) return;
+  if (!props.job) { files.value = []; return; }
   try {
     files.value = await api.listOutputFiles(props.job.output_dir);
   } catch (e: any) {
@@ -23,11 +22,28 @@ async function refresh() {
   }
 }
 
+// Poll while a job is running so files appear as they're written; stop
+// once status flips out of "running".
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(refresh, 1000);
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
 watch(
   () => [props.job?.id, props.job?.status, props.job?.finished_at_ms],
-  refresh,
+  () => {
+    refresh();
+    if (props.job?.status === "running") startPolling();
+    else stopPolling();
+  },
   { immediate: true },
 );
+
+onBeforeUnmount(stopPolling);
 </script>
 
 <template>

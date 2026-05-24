@@ -17,6 +17,35 @@ const colormap = ref<string>("Viridis");
 const tIndex = ref<number>(0);
 const err = ref<string | null>(null);
 const fluxFile = ref<OutputFile | null>(null);
+const units = ref<{length: string; time: string} | null>(null);
+
+// Best-effort: read the scenario's units so axes can show "time [day]"
+// rather than just "time". Hits api.readScenario when a 1D job runs.
+async function loadUnits() {
+  if (!props.job) { units.value = null; return; }
+  try {
+    const s = await api.readScenario(props.job.input_dir);
+    units.value = { length: s.units.length, time: s.units.time };
+  } catch { units.value = null; }
+}
+
+// HYDRUS-1D NOD_INF column → unit string (in terms of L, T from units)
+function _varUnit(name: string): string {
+  if (!units.value) return "";
+  const L = units.value.length, T = units.value.time;
+  const u: Record<string, string> = {
+    "Head":      `[${L}]`,
+    "Moisture":  `[-]`,
+    "K":         `[${L}/${T}]`,
+    "C":         `[1/${L}]`,
+    "Flux":      `[${L}/${T}]`,
+    "Sink":      `[1/${T}]`,
+    "Kappa":     `[-]`,
+    "vOverKsTop":`[-]`,
+    "Temp":      `[°C]`,
+  };
+  return u[name] ? ` ${u[name]}` : "";
+}
 
 const colormaps = ["Viridis", "Cividis", "Plasma", "Turbo", "RdBu"];
 
@@ -34,6 +63,7 @@ async function refresh() {
   series.value = null;
   fluxFile.value = null;
   if (!props.job) return;
+  loadUnits();
   try {
     const files = await api.listOutputFiles(props.job.output_dir);
     const nodInf = files.find((f) =>
@@ -108,8 +138,10 @@ function drawHeat() {
     [heat, scrub],
     {
       ...darkLayout.value,
-      xaxis: { ...darkLayout.value.xaxis, title: "time" },
-      yaxis: { ...darkLayout.value.yaxis, title: "depth" },
+      xaxis: { ...darkLayout.value.xaxis,
+               title: `time${units.value ? ' [' + units.value.time + ']' : ''}` },
+      yaxis: { ...darkLayout.value.yaxis,
+               title: `depth${units.value ? ' [' + units.value.length + ']' : ''}` },
       title: { text: `${varName.value}(z, t)`, font: { size: 13 } },
       showlegend: false,
     },
@@ -156,10 +188,12 @@ function drawProfile() {
     [trace],
     {
       ...darkLayout.value,
-      xaxis: { ...darkLayout.value.xaxis, title: varName.value },
-      yaxis: { ...darkLayout.value.yaxis, title: "depth" },
+      xaxis: { ...darkLayout.value.xaxis,
+               title: `${varName.value}${_varUnit(varName.value)}` },
+      yaxis: { ...darkLayout.value.yaxis,
+               title: `depth${units.value ? ' [' + units.value.length + ']' : ''}` },
       title: {
-        text: `profile @ t=${s.times[ti].toFixed(3)}`,
+        text: `profile @ t=${s.times[ti].toFixed(3)}${units.value ? ' ' + units.value.time : ''}`,
         font: { size: 13 },
       },
       showlegend: false,
@@ -200,7 +234,8 @@ async function drawFlux(path: string) {
       traces,
       {
         ...darkLayout.value,
-        xaxis: { ...darkLayout.value.xaxis, title: "time" },
+        xaxis: { ...darkLayout.value.xaxis,
+                 title: `time${units.value ? ' [' + units.value.time + ']' : ''}` },
         yaxis: { ...darkLayout.value.yaxis, title: "" },
         title: { text: "boundary fluxes", font: { size: 12 } },
         showlegend: true,

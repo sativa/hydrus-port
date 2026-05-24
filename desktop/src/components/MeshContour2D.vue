@@ -15,6 +15,15 @@ const tIndex = ref(0);
 const colormap = ref<string>("Viridis");
 const showStreamlines = ref<boolean>(false);
 const err = ref<string | null>(null);
+const units = ref<{length: string; time: string} | null>(null);
+
+async function loadUnits() {
+  if (!props.job) { units.value = null; return; }
+  try {
+    const s = await api.readScenario(props.job.input_dir);
+    units.value = { length: s.units.length, time: s.units.time };
+  } catch { units.value = null; }
+}
 
 const colormaps = ["Viridis", "Cividis", "Plasma", "Turbo", "RdBu"];
 
@@ -28,6 +37,7 @@ async function refresh() {
   mesh.value = null;
   fields.value = {};
   if (!props.job) return;
+  loadUnits();
   try {
     const gridPath = `${props.job.input_dir}/GRID.IN`;
     mesh.value = await api.parseSwms2dGrid(gridPath);
@@ -205,9 +215,11 @@ function drawHeat() {
   }
   const layout: any = {
     ...darkLayout.value,
-    xaxis: { ...darkLayout.value.xaxis, title: "x" },
-    yaxis: { ...darkLayout.value.yaxis, title: "z" },
-    title: { text: `${varName.value} @ t=${times.value[tIndex.value]?.toFixed(2)}`, font: { size: 12 } },
+    xaxis: { ...darkLayout.value.xaxis,
+             title: `x${units.value ? ' [' + units.value.length + ']' : ''}` },
+    yaxis: { ...darkLayout.value.yaxis,
+             title: `z${units.value ? ' [' + units.value.length + ']' : ''}` },
+    title: { text: `${varName.value} @ t=${times.value[tIndex.value]?.toFixed(2)}${units.value ? ' ' + units.value.time : ''}`, font: { size: 12 } },
   };
   Plotly.react(heatEl.value, traces, layout, { responsive: true, displaylogo: false });
 }
