@@ -67,3 +67,22 @@ def test_observation_set_shape_mismatch_raises():
         ObservationSet(specs=specs,
                        values=np.array([0.1, 0.2]),    # wrong length
                        sigmas=np.array([0.01, 0.01]))
+
+
+def test_obs_node_loader_reads_infiltr_v1():
+    """Load the real HYDRUS-1D OBS_NODE.OUT and verify spec count + sample value."""
+    from hydrus_research.observations.loaders import from_hydrus_obsnod
+    path = Path("tests/fixtures/infiltr_v1/reference_out/OBS_NODE.OUT")
+    if not path.exists():
+        pytest.skip("infiltr_v1 reference output not present")
+    times_to_sample = [0.5, 1.0, 2.0]   # any times present in the file
+    obs = from_hydrus_obsnod(path, kinds=("theta", "h"), times_day=times_to_sample)
+    # number of obs = n_nodes * n_kinds * n_times
+    assert obs.M > 0
+    # spec names follow the "<kind>_node<N>_d<t>" format
+    for s in obs.specs:
+        assert "_node" in s.name and "_d" in s.name
+        assert "node" in s.location
+    # theta values lie in a physical range [0, 1)
+    theta_vals = np.array([v for s, v in zip(obs.specs, obs.values) if s.kind == "theta"])
+    assert (theta_vals >= 0).all() and (theta_vals < 1.0).all()

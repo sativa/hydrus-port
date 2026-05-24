@@ -3,7 +3,6 @@ data side of any inversion / sensitivity / UQ workflow."""
 from __future__ import annotations
 import csv
 from pathlib import Path
-from typing import Iterable
 import numpy as np
 
 from .spec import ObservationSpec
