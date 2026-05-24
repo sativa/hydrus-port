@@ -25,9 +25,12 @@ class Event:
     form: str | None = None                      # "NH4" | "NO3" | "urea" | ... (fert only)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Forcing:
-    """All time-varying drivers for one Simulator.run()."""
+    """All time-varying drivers for one Simulator.run().
+
+    Treated as immutable by convention; ndarray fields prevent hash-based collections.
+    """
     times_days: np.ndarray
     precip_cm_per_day: np.ndarray
     pet_cm_per_day: np.ndarray
@@ -40,8 +43,9 @@ class Forcing:
     air_temp_c: np.ndarray | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class InitialState:
+    """Treated as immutable by convention; ndarray fields prevent hash-based collections."""
     z_cm: np.ndarray
     theta: np.ndarray | None
     h_cm: np.ndarray | None
@@ -49,11 +53,14 @@ class InitialState:
     t_celsius: np.ndarray | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class SimResult:
     """Raw simulator output. 1D adapters store theta/h with shape (NT, NZ);
     2D/3D adapters store mesh-node arrays of shape (NT, Nnode) and use
-    `z` slot for mesh metadata or a dummy axis."""
+    `z` slot for mesh metadata or a dummy axis.
+
+    Treated as immutable by convention; ndarray fields prevent hash-based collections.
+    """
     times: np.ndarray
     z: np.ndarray
     theta: np.ndarray

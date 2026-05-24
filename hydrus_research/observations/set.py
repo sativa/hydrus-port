@@ -27,12 +27,17 @@ class ObservationSet:
     def M(self) -> int:
         return len(self.specs)
 
+    @property
+    def weights(self) -> np.ndarray:
+        """Per-observation weights from spec.weight."""
+        return np.array([s.weight for s in self.specs], dtype=float)
+
     def residuals(self, sim: np.ndarray) -> np.ndarray:
-        """(sim - obs) / sigma — what scipy.least_squares wants."""
+        """weights * (sim - obs) / sigma — what scipy.least_squares wants."""
         sim = np.asarray(sim, dtype=float)
         if sim.shape != self.values.shape:
             raise ValueError(f"sim shape {sim.shape} mismatch obs {self.values.shape}")
-        return (sim - self.values) / self.sigmas
+        return self.weights * (sim - self.values) / self.sigmas
 
     def objective_l2(self, sim: np.ndarray) -> float:
         """sum of squared standardized residuals (weighted by 1/sigma**2)."""

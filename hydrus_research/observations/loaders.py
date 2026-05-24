@@ -68,11 +68,11 @@ def from_hydrus_obsnod(path: Path | str,
     ----------
     path : OBS_NODE.OUT location.
     kinds : which observable columns to harvest. Choose any of
-        {"theta", "h", "c", "T"} that are present in the file.
+        {"theta", "h", "c"} (T deferred to M0/M-heat work) that are present in the file.
     times_day : list of times to sample (linear interp on the file's time axis).
         If None, every printed time is used.
     default_sigma : per-kind measurement-error stddev; default 0.01 for theta,
-        1.0 for h, 0.5 for c, 0.5 for T.
+        1.0 for h, 0.5 for c.
     """
     path = Path(path)
     node_ids, cols, data = _parse_obsnod(path)
@@ -93,7 +93,12 @@ def from_hydrus_obsnod(path: Path | str,
     vals: list[float] = []
     sigs: list[float] = []
     for kind in kinds:
-        key = "conc" if kind == "c" else ("temp" if kind == "T" else kind)
+        if kind not in ("theta", "h", "c"):
+            raise NotImplementedError(
+                f"observable kind {kind!r} is not supported in M0; "
+                f"add it to ObsKind in observations/spec.py first"
+            )
+        key = "conc" if kind == "c" else kind
         if key not in col_pos:
             raise KeyError(f"requested kind {kind!r} (column {key!r}) not in OBS_NODE.OUT")
         col_in_node = col_pos[key]
@@ -104,7 +109,7 @@ def from_hydrus_obsnod(path: Path | str,
                 v = float(np.interp(t, times, series))
                 specs.append(ObservationSpec(
                     name=f"{kind}_node{node_id}_d{t:g}",
-                    kind=kind if kind in ("theta", "h", "c") else "h",  # T not in M0
+                    kind=kind,
                     location={"node": node_id},
                     time_day=float(t),
                 ))
