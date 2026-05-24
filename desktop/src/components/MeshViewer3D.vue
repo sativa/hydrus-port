@@ -51,12 +51,29 @@ async function refresh() {
   err.value = null;
   vtus.value = [];
   current.value = null;
-  if (!props.job) return;
+  // Try the current job's output_dir first, then fall back to the 3D
+  // demo's canonical VTU location. This way the 3D viewer is useful
+  // even when the user is on a 1D or 2D scenario.
+  const dirs: string[] = [];
+  if (props.job?.output_dir) dirs.push(props.job.output_dir);
   try {
-    const all = await api.listVtuSeries(props.job.output_dir);
-    vtus.value = all.filter((p) => p.endsWith(".vtu"));
-    tIndex.value = 0;
-    if (vtus.value[0]) await loadFile(vtus.value[0]);
+    const py = await api.detectPython();
+    if (py.repo_root) {
+      dirs.push(`${py.repo_root}/tests/fixtures/richards3d_box/out`);
+    }
+  } catch { /* python detect can fail; fallback already handled */ }
+  try {
+    for (const d of dirs) {
+      const all = await api.listVtuSeries(d);
+      const vs = all.filter((p) => p.endsWith(".vtu"));
+      if (vs.length) {
+        vtus.value = vs;
+        tIndex.value = 0;
+        await loadFile(vs[0]);
+        return;
+      }
+    }
+    err.value = "no .vtu files in this job's output (and no 3D demo data on disk)";
   } catch (e: any) {
     err.value = String(e);
   }
