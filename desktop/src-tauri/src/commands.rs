@@ -378,31 +378,58 @@ pub struct OutputFile {
 
 #[tauri::command]
 pub fn list_output_files(dir: String) -> Result<Vec<OutputFile>, String> {
-    // Only top-level files of `dir` itself. max_depth(2) used to leak
-    // every file in subdirectories (e.g. repo root → .git tree), which
-    // the user reported as "inaccurate info" in the OutputBrowser.
+    // OutputBrowser must show *simulation outputs*, not whatever
+    // happens to live in `dir` (the regression test job's output_dir
+    // is the repo root, which has source files at the top level).
+    //
+    // Strategy:
+    //  - Whitelist by extension (.out/.dat/.vtu/.pvd + a few aliases).
+    //  - Scan `dir` itself, plus any conventional output-subdirs
+    //    ("out", "Out", "OUT", "output", "results") one level down.
+    //  - Skip dotfiles; skip directories.
     let path = std::path::Path::new(&dir);
-    let mut out = Vec::new();
+    let mut out: Vec<OutputFile> = Vec::new();
     if !path.is_dir() {
         return Ok(out);
     }
-    let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
-    for entry in rd.flatten() {
-        let p = entry.path();
-        if !p.is_file() { continue; }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        // Skip hidden / metadata files that always show up in repo roots
-        if name.starts_with('.') { continue; }
-        let meta = match entry.metadata() {
-            Ok(m) => m, Err(_) => continue,
-        };
-        out.push(OutputFile {
-            name,
-            path: p.to_string_lossy().into_owned(),
-            size: meta.len(),
-        });
+    fn is_sim_output(name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
+        const EXT: &[&str] = &[
+            ".out", ".dat", ".vtu", ".pvd",
+            ".csv", ".tsv", ".txt", ".nc",
+        ];
+        EXT.iter().any(|e| lower.ends_with(e))
+    }
+    fn scan(dir: &std::path::Path, out: &mut Vec<OutputFile>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return; };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if !p.is_file() { continue; }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') { continue; }
+            if !is_sim_output(&name) { continue; }
+            let meta = match entry.metadata() { Ok(m) => m, Err(_) => continue };
+            out.push(OutputFile {
+                name,
+                path: p.to_string_lossy().into_owned(),
+                size: meta.len(),
+            });
+        }
+    }
+    scan(path, &mut out);
+    // Look for one conventional output-subdir. On case-insensitive
+    // file systems (default macOS) `out` and `OUT` resolve to the
+    // same inode, so we accept the first match and stop.
+    for sub in &["out", "Out", "OUT", "output", "results"] {
+        let candidate = path.join(sub);
+        if candidate.is_dir() {
+            scan(&candidate, &mut out);
+            break;
+        }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
+    // De-dup by canonical path (case-insensitive FS may yield doubles)
+    out.dedup_by(|a, b| a.path == b.path);
     Ok(out)
 }
 
