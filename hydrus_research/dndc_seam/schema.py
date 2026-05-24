@@ -90,3 +90,30 @@ class FeddesParams(BaseModel):                        # #4 water stress
                     f"got {seq}"
                 )
         return self
+
+
+class FertEvent(BaseModel):                           # #5 fertilizer event
+    date: date
+    depth_cm: float                                   # 0 = surface; >0 = injected/banded
+    mass_kg_n_ha: float
+    form: Literal["NH4", "NO3", "urea", "NH4NO3", "compound"]
+    composition: dict[str, float] | None = None
+
+    @model_validator(mode="after")
+    def _compound_needs_composition(self):
+        if self.form == "compound" and not self.composition:
+            raise ValueError("form='compound' requires composition dict (e.g. {'NH4':0.5,'NO3':0.5})")
+        if self.composition is not None:
+            total = sum(self.composition.values())
+            if not (0.99 < total < 1.01):
+                raise ValueError(f"composition fractions must sum to ~1.0; got {total}")
+        return self
+
+
+class IrrigEvent(BaseModel):                          # #6 irrigation event
+    date: date
+    method: Literal["flood", "sprinkler", "drip", "subsurface"]
+    amount_cm: float
+    duration_h: float
+    solute_concs_mg_l: dict[str, float] = Field(default_factory=dict)
+    drip_emitter_xyz: tuple[float, float, float] | None = None
