@@ -118,7 +118,11 @@ if _FASTAPI_OK:
 # App factory
 # --------------------------------------------------------------------
 
-def create_app():
+def build_app():                                                   # M2: factory alias
+    """App factory — create and configure the FastAPI app instance.
+
+    M2: Registers /research/ptf/* routes in addition to the core /api/* routes.
+    M1 will also call build_app() and register its own routers when merged."""
     if not _FASTAPI_OK:
         raise ImportError(
             "hydrus_port_server requires FastAPI. Install with:\n"
@@ -130,6 +134,13 @@ def create_app():
         CORSMiddleware,
         allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
+
+    # M2: Register the PTF research router
+    try:
+        from .routers.research_ptf import router as ptf_router
+        app.include_router(ptf_router, prefix="/research/ptf", tags=["research", "ptf"])
+    except ImportError:
+        pass
 
     @app.get("/api/health")
     def health():
@@ -214,6 +225,10 @@ def create_app():
     return app
 
 
+# M2: keep create_app as a backward-compat alias
+create_app = build_app                                             # M2:
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="hydrus-port-serve")
     p.add_argument("--host", default="127.0.0.1")
@@ -224,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: FastAPI not installed. Run: pip install 'hydrus-port[gui]'",
               file=sys.stderr)
         return 2
-    app = create_app()
+    app = build_app()                                              # M2: use build_app
     uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
     return 0
 
