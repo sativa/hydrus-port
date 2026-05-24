@@ -33,16 +33,23 @@ watch(
 <template>
   <div class="panel">
     <div class="row" style="justify-content: space-between">
-      <div class="title">Output files</div>
+      <div class="title">
+        Output files
+        <span v-if="files.length" class="muted small">({{ files.length }})</span>
+      </div>
       <button class="secondary" @click="refresh" :disabled="!job">Refresh</button>
+    </div>
+    <div v-if="job" class="muted mono small dir-line"
+         :title="job.output_dir">
+      {{ job.output_dir }}
     </div>
     <div v-if="!job" class="muted small">no job yet</div>
     <div v-else-if="!files.length" class="muted small">
-      no files yet ({{ job.output_dir }})
+      no files in this directory yet
     </div>
     <ul v-else class="files mono">
       <li v-for="f in files" :key="f.path">
-        <span>{{ f.name }}</span>
+        <span :title="f.path">{{ f.name }}</span>
         <span class="muted small">{{ formatSize(f.size) }}</span>
       </li>
     </ul>
@@ -67,4 +74,11 @@ watch(
   border-bottom: 1px solid var(--border);
 }
 .small { font-size: 11px; }
+.dir-line {
+  margin: 2px 0 4px 0;
+  word-break: break-all;
+  white-space: pre-wrap;
+  font-size: 10px;
+  opacity: 0.7;
+}
 </style>

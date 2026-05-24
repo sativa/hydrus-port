@@ -158,23 +158,30 @@ pub async fn start_simulation(
         });
     std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
 
-    // All three sims dispatch through the unified `hydrus` CLI
-    // (hydrus_port.cli) via `python -u -m hydrus_port.cli {1d|2d|3d}`.
-    let subcmd = match args.kind.as_str() {
-        "hydrus1d" | "1d" => "1d",
-        "swms2d"   | "2d" => "2d",
-        "richards3d" | "3d" => "3d",
-        other => return Err(format!("Unknown kind: {other}")),
-    };
-
+    // Dispatch:
+    //  - For 1d/2d: invoke `hydrus {1d|2d} <input_dir>` (legacy ASCII path)
+    //  - For 3d: invoke `hydrus run <case.json>` (canonical-JSON path)
     let py = which_python().ok_or("python not found")?;
     let mut cmd = Command::new(&py);
-    cmd.arg("-u") // unbuffered stdout for live streaming
-        .arg("-m")
-        .arg("hydrus_port.cli")
-        .arg(subcmd);
-    if subcmd != "3d" {
-        cmd.arg(&input_dir).arg("-o").arg(&output_dir);
+    cmd.arg("-u").arg("-m").arg("hydrus_port.cli");
+    match args.kind.as_str() {
+        "hydrus1d" | "1d" => {
+            cmd.arg("1d").arg(&input_dir).arg("-o").arg(&output_dir);
+        }
+        "swms2d" | "2d" => {
+            cmd.arg("2d").arg(&input_dir).arg("-o").arg(&output_dir);
+        }
+        "richards3d" | "3d" => {
+            // input_dir is the path to a scenario.json (the picker
+            // routes here when the user selects richards3d_box).
+            // Pre-existing .py fallback: invoke the demo directly.
+            if input_dir.extension().and_then(|s| s.to_str()) == Some("json") {
+                cmd.arg("run").arg(&input_dir).arg("-o").arg(&output_dir);
+            } else {
+                cmd.arg("3d");
+            }
+        }
+        other => return Err(format!("Unknown kind: {other}")),
     }
     if let Some(extra) = &args.extra_args {
         cmd.args(extra);
@@ -371,17 +378,29 @@ pub struct OutputFile {
 
 #[tauri::command]
 pub fn list_output_files(dir: String) -> Result<Vec<OutputFile>, String> {
+    // Only top-level files of `dir` itself. max_depth(2) used to leak
+    // every file in subdirectories (e.g. repo root → .git tree), which
+    // the user reported as "inaccurate info" in the OutputBrowser.
+    let path = std::path::Path::new(&dir);
     let mut out = Vec::new();
-    for e in walkdir::WalkDir::new(&dir).max_depth(2) {
-        let e = e.map_err(|err| err.to_string())?;
-        if e.file_type().is_file() {
-            let meta = e.metadata().map_err(|err| err.to_string())?;
-            out.push(OutputFile {
-                name: e.file_name().to_string_lossy().into_owned(),
-                path: e.path().to_string_lossy().into_owned(),
-                size: meta.len(),
-            });
-        }
+    if !path.is_dir() {
+        return Ok(out);
+    }
+    let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if !p.is_file() { continue; }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Skip hidden / metadata files that always show up in repo roots
+        if name.starts_with('.') { continue; }
+        let meta = match entry.metadata() {
+            Ok(m) => m, Err(_) => continue,
+        };
+        out.push(OutputFile {
+            name,
+            path: p.to_string_lossy().into_owned(),
+            size: meta.len(),
+        });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)

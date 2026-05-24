@@ -28,18 +28,20 @@ const isTwoDimensional = computed(() => {
 const rightTab = ref<"3d" | "editor">("editor");
 const editorPath = ref<string | null>(null);
 function onScenarioSelected(path: string, kind: string) {
-  // Editor handles both 1d (HYDRUS-1D Selector.in + Profile.dat) and
-  // 2d (SWMS_2D SELECTOR.IN + GRID.IN) via the unified canonical
-  // schema; richards3d uses .json case files (TODO surface here).
+  // Editor handles 1d / 2d / 3d through the canonical Scenario schema:
+  //  - 1d:    Selector.in + Profile.dat ↔ canonical
+  //  - 2d:    SELECTOR.IN + GRID.IN     ↔ canonical
+  //  - 3d:    scenario.json directly     (no ASCII variant)
   if (kind === "hydrus1d" || kind === "1d"
-      || kind === "swms2d"  || kind === "2d") {
+      || kind === "swms2d"  || kind === "2d"
+      || kind === "richards3d" || kind === "3d") {
     editorPath.value = path;
   } else {
     editorPath.value = null;
   }
   // Auto-switch right-panel tab to the most useful view per scenario
   if (kind === "richards3d" || kind === "3d") {
-    rightTab.value = "3d";
+    rightTab.value = "3d";   // viewer is most informative for 3d
   } else {
     rightTab.value = "editor";
   }

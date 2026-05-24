@@ -345,10 +345,15 @@ def _dict_to_scenario(d: dict):
 
 def _detect_dimension(input_dir: Path) -> str:
     """Sniff the input directory to decide which adapter to use."""
+    # 3D canonical scenarios live as a single .json file
+    if input_dir.is_file() and input_dir.suffix == ".json":
+        return "3d"
     names_lower = {p.name.lower() for p in input_dir.iterdir()}
-    if "grid.in" in names_lower:        # SWMS_2D unique marker
+    if "scenario.json" in names_lower:        # 3D canonical
+        return "3d"
+    if "grid.in" in names_lower:              # SWMS_2D unique marker
         return "2d"
-    if "profile.dat" in names_lower:    # HYDRUS-1D unique marker
+    if "profile.dat" in names_lower:          # HYDRUS-1D unique marker
         return "1d"
     if "selector.in" in names_lower:
         # ambiguous — peek at the file header to decide
@@ -358,7 +363,7 @@ def _detect_dimension(input_dir: Path) -> str:
         return "1d" if head.startswith("Pcp_File_Version") else "2d"
     raise SystemExit(
         f"can't detect simulator format in {input_dir} "
-        f"(need GRID.IN or Profile.dat or Selector.in)"
+        f"(need GRID.IN or Profile.dat or Selector.in or scenario.json)"
     )
 
 
@@ -369,6 +374,9 @@ def _adapter_for(dim: str):
         return a
     if dim in ("2d", "swms2d"):
         from .adapters import swms2d as a
+        return a
+    if dim in ("3d", "richards3d"):
+        from .adapters import richards3d as a
         return a
     raise SystemExit(f"no adapter for dimension {dim!r}")
 
@@ -424,8 +432,11 @@ def _run_case(args: argparse.Namespace) -> int:
         elif scenario.dimension == "1d":
             from hydrus1d.hydrus import run_simulation
             run_simulation(input_dir=td, output_dir=str(out))
+        elif scenario.dimension == "3d":
+            from .adapters import richards3d as r3d
+            r3d.run(scenario, out)
         else:
-            raise SystemExit(f"3D case files not yet supported via hydrus run")
+            raise SystemExit(f"unknown scenario dimension {scenario.dimension!r}")
     print(f"output → {out}", file=sys.stderr)
     return 0
 

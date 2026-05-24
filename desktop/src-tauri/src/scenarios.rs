@@ -50,13 +50,18 @@ pub fn list() -> Vec<Scenario> {
             });
         }
     }
-    // Always include the 3D synthetic column scenario
+    // Always include the 3D canonical case (if present); fall back to
+    // the validate_richards3d.py path for back-compat if the .json
+    // hasn't been generated yet.
+    let r3d_json = root.join("tests").join("cases")
+        .join("richards3d_box.json");
+    let r3d_py = root.join("tests").join("validate_richards3d.py");
+    let r3d_path = if r3d_json.exists() { r3d_json } else { r3d_py };
     out.push(Scenario {
-        name: "richards3d_box_column".into(),
+        name: "richards3d_box".into(),
         kind: "richards3d".into(),
-        path: root.join("tests").join("validate_richards3d.py")
-            .to_string_lossy().into_owned(),
-        description: "Synthetic 3D infiltration on a tensor-product box".into(),
+        path: r3d_path.to_string_lossy().into_owned(),
+        description: "Synthetic 3D infiltration on a tensor-product hex box".into(),
     });
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
