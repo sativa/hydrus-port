@@ -87,3 +87,43 @@ def test_irrig_event_flood_no_xyz():
                    amount_cm=5.0, duration_h=12.0)
     assert i.drip_emitter_xyz is None
     assert i.solute_concs_mg_l == {}
+
+
+from hydrus_research.dndc_seam.schema import NTransformation, PlantNUptake
+
+
+def test_n_transform_constant_rates():
+    n = NTransformation(mode="constant_rates",
+                        k_mineralization_d=0.005,
+                        k_nitrification_d=0.1,
+                        k_denitrification_d=0.02,
+                        k_volatilization_d=0.01)
+    assert n.mode == "constant_rates"
+
+
+def test_n_transform_constant_requires_rates():
+    with pytest.raises(ValidationError):
+        NTransformation(mode="constant_rates")      # no rates given
+
+
+def test_n_transform_external_callable_b2_hook():
+    n = NTransformation(mode="external_callable",
+                        callable_ref="dndc.n_module:compute_rates")
+    assert n.callable_ref == "dndc.n_module:compute_rates"
+
+
+def test_n_transform_external_requires_ref():
+    with pytest.raises(ValidationError):
+        NTransformation(mode="external_callable")
+
+
+def test_plant_n_uptake_michaelis_menten():
+    p = PlantNUptake(mode="michaelis_menten",
+                     km_mg_l=10.0,
+                     vmax_mg_per_day_per_root_cm=0.05)
+    assert p.km_mg_l == 10.0
+
+
+def test_plant_n_uptake_demand_requires_daily_demand():
+    with pytest.raises(ValidationError):
+        PlantNUptake(mode="demand_driven")

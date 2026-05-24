@@ -117,3 +117,52 @@ class IrrigEvent(BaseModel):                          # #6 irrigation event
     duration_h: float
     solute_concs_mg_l: dict[str, float] = Field(default_factory=dict)
     drip_emitter_xyz: tuple[float, float, float] | None = None
+
+
+class NTransformation(BaseModel):                     # #7 N transformation (B2 hook)
+    mode: Literal["constant_rates", "external_callable", "lookup_table"]
+    # constant_rates mode
+    k_mineralization_d: float | None = None
+    k_nitrification_d: float | None = None
+    k_denitrification_d: float | None = None
+    k_volatilization_d: float | None = None
+    # external_callable mode (B2)
+    callable_ref: str | None = None                   # e.g. "dndc.n_module:compute_rates"
+    # lookup_table mode (interim)
+    table_path: Path | None = None
+
+    @model_validator(mode="after")
+    def _mode_required_fields(self):
+        if self.mode == "constant_rates":
+            if all(getattr(self, k) is None for k in
+                   ("k_mineralization_d", "k_nitrification_d",
+                    "k_denitrification_d", "k_volatilization_d")):
+                raise ValueError("mode='constant_rates' requires at least one k_*_d rate")
+        elif self.mode == "external_callable":
+            if not self.callable_ref:
+                raise ValueError("mode='external_callable' requires callable_ref "
+                                 "(e.g. 'dndc.n_module:compute_rates')")
+        elif self.mode == "lookup_table":
+            if not self.table_path:
+                raise ValueError("mode='lookup_table' requires table_path")
+        return self
+
+
+class PlantNUptake(BaseModel):                        # #8 plant N uptake
+    mode: Literal["passive_with_water", "michaelis_menten",
+                  "demand_driven", "external"]
+    km_mg_l: float | None = None
+    vmax_mg_per_day_per_root_cm: float | None = None
+    daily_demand_kg_n_ha: list[float] | None = None
+    callable_ref: str | None = None                   # B2
+
+    @model_validator(mode="after")
+    def _mode_required_fields(self):
+        if self.mode == "michaelis_menten":
+            if self.km_mg_l is None or self.vmax_mg_per_day_per_root_cm is None:
+                raise ValueError("mode='michaelis_menten' requires km_mg_l and vmax_mg_per_day_per_root_cm")
+        if self.mode == "demand_driven" and not self.daily_demand_kg_n_ha:
+            raise ValueError("mode='demand_driven' requires daily_demand_kg_n_ha")
+        if self.mode == "external" and not self.callable_ref:
+            raise ValueError("mode='external' requires callable_ref")
+        return self
