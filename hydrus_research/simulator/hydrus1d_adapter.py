@@ -84,7 +84,37 @@ class Hydrus1DSimulator(Simulator):
         )
 
     def observable_at(self, result, spec):
-        raise NotImplementedError("implemented in Task 12")
+        """1D interp: locate `z_cm` along the depth axis (linear), then locate
+        `time_day` along the time axis (linear). 2D/3D adapters override this.
+
+        Note: result.z may be descending (typical in HYDRUS-1D output where
+        surface is at z=0 and depths go negative). np.interp requires
+        ascending x-axis, so we check the z direction and reverse if needed."""
+        z_target = float(spec.location["z_cm"])
+        t_target = float(spec.time_day)
+
+        if spec.kind == "theta":
+            field = result.theta
+        elif spec.kind == "h":
+            field = result.h
+        elif spec.kind == "c":
+            if result.c is None:
+                raise ValueError("observable kind='c' requested but result has no solute field")
+            field = result.c
+        else:
+            raise NotImplementedError(f"observable kind {spec.kind!r} not supported in M0")
+
+        # Check if z is descending; if so, reverse both z and each field row
+        z_for_interp = result.z
+        field_for_interp = field
+        if len(z_for_interp) > 1 and z_for_interp[0] > z_for_interp[-1]:
+            # z is descending; reverse for np.interp
+            z_for_interp = z_for_interp[::-1]
+            field_for_interp = field[:, ::-1]
+
+        # interp along z for each time row, then along t
+        col_at_z = np.array([np.interp(z_target, z_for_interp, row) for row in field_for_interp])
+        return float(np.interp(t_target, result.times, col_at_z))
 
 
 # ---------------------------------------------------------------------------
