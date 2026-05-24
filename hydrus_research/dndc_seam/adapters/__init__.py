@@ -20,5 +20,6 @@ class DndcSeamAdapter(ABC):
 # Re-export concrete adapters at the package level
 from .manual_file import ManualFileAdapter
 from .dndc_live import DndcLiveAdapter
+from .csv_netcdf import CsvNetcdfAdapter
 
-__all__ = ["DndcSeamAdapter", "ManualFileAdapter", "DndcLiveAdapter"]
+__all__ = ["DndcSeamAdapter", "ManualFileAdapter", "DndcLiveAdapter", "CsvNetcdfAdapter"]
