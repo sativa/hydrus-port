@@ -80,3 +80,66 @@ def test_parameter_map_requires_unique_names():
     ]
     with pytest.raises(ValueError):
         ParameterMap(dup)
+
+
+def test_apply_to_scenario_patches_dict_path():
+    pm = ParameterMap(_three_specs())
+    scenario = {
+        "materials": [
+            {"alpha": 0.01, "n": 1.4, "Ks": 1.0},
+            {"alpha": 0.05, "n": 1.5, "Ks": 5.0},
+        ],
+    }
+    patched = pm.apply_to_scenario(scenario, {"alpha": 0.123, "n": 2.0, "Ks": 50.0})
+    assert patched["materials"][0]["alpha"] == 0.123
+    assert patched["materials"][0]["n"] == 2.0
+    assert patched["materials"][0]["Ks"] == 50.0
+    # original untouched (we return a deep copy)
+    assert scenario["materials"][0]["alpha"] == 0.01
+    # other-index material untouched
+    assert patched["materials"][1]["alpha"] == 0.05
+
+
+def test_apply_to_scenario_supports_nested_path():
+    pm = ParameterMap([
+        ParameterSpec(name="tol", target="solver.tol_theta", bounds=(1e-6, 1e-2)),
+    ])
+    scenario = {"solver": {"tol_theta": 0.001, "max_picard": 20}}
+    patched = pm.apply_to_scenario(scenario, {"tol": 0.005})
+    assert patched["solver"]["tol_theta"] == 0.005
+    assert patched["solver"]["max_picard"] == 20
+
+
+def test_apply_to_scenario_rejects_unknown_path():
+    pm = ParameterMap([
+        ParameterSpec(name="x", target="does.not.exist", bounds=(0, 1)),
+    ])
+    with pytest.raises(KeyError):
+        pm.apply_to_scenario({"materials": []}, {"x": 0.5})
+
+
+def test_apply_to_scenario_roundtrip_with_real_scenario():
+    """The patched dict must round-trip through hydrus_port.schema, proving
+    the path format is compatible with the canonical schema."""
+    from hydrus_port.schema import Scenario, ScenarioMeta, Units, Solver, \
+        HydraulicMaterial, TimeControl, Geometry1D, _scenario_from_dict
+    s = Scenario(
+        meta=ScenarioMeta(name="t"),
+        units=Units(),
+        solver=Solver(),
+        materials=[HydraulicMaterial(theta_r=0.05, theta_s=0.4,
+                                     alpha=0.02, n=1.5, Ks=10.0)],
+        time=TimeControl(t_init=0.0, t_max=1.0),
+        geometry=Geometry1D(z=[0.0, 50.0, 100.0],
+                            initial_h=[-100.0, -100.0, -100.0],
+                            mat_num=[1, 1, 1]),
+    )
+    d = s.to_dict()
+    pm = ParameterMap([
+        ParameterSpec(name="alpha", target="materials[0].alpha", bounds=(0.001, 1.0)),
+    ])
+    patched = pm.apply_to_scenario(d, {"alpha": 0.099})
+    s2 = _scenario_from_dict(patched)
+    assert s2.materials[0].alpha == 0.099
+    # original Scenario object untouched
+    assert s.materials[0].alpha == 0.02

@@ -1,13 +1,61 @@
 """ParameterMap — bijection between an optimizer's theta vector and a
 named-parameter dict that the Simulator (and scenario JSON) understands."""
 from __future__ import annotations
+import copy
+import re
 from typing import Any
 import numpy as np
 
 from .spec import ParameterSpec
 
 
-class ParameterMap:
+_INDEX_RE = re.compile(r"^([^\[]+)\[(\d+)\]$")
+
+
+def _walk(d: Any, parts: list[str]) -> tuple[Any, str | int]:
+    """Walk `parts` over a nested dict / list; return (container, last_key).
+    `parts` are dotted keys, optionally suffixed with `[N]` for list indexing."""
+    cur = d
+    for i, part in enumerate(parts[:-1]):
+        m = _INDEX_RE.match(part)
+        if m:
+            key, idx = m.group(1), int(m.group(2))
+            cur = cur[key]
+            cur = cur[idx]
+        else:
+            cur = cur[part]
+    last = parts[-1]
+    m = _INDEX_RE.match(last)
+    if m:
+        key, idx = m.group(1), int(m.group(2))
+        return cur[key], idx
+    return cur, last
+
+
+class _ApplyMixin:
+    def apply_to_scenario(self, scenario: dict, named: dict[str, float]) -> dict:
+        """Return a deep copy of `scenario` with each named value patched into
+        its ParameterSpec.target path. `target` syntax: dotted keys with
+        optional `[N]` indexing, e.g. `materials[0].alpha`, `solver.tol_theta`,
+        `geometry.nodes[12].h_init`."""
+        out = copy.deepcopy(scenario)
+        for s in self.specs:
+            if s.name not in named:
+                continue
+            value = named[s.name]
+            parts = s.target.split(".")
+            try:
+                container, last_key = _walk(out, parts)
+            except (KeyError, IndexError, TypeError) as e:
+                raise KeyError(f"target {s.target!r} not found in scenario: {e}") from e
+            try:
+                container[last_key] = value
+            except (KeyError, IndexError, TypeError) as e:
+                raise KeyError(f"cannot set {s.target!r} in scenario: {e}") from e
+        return out
+
+
+class ParameterMap(_ApplyMixin):
     def __init__(self, specs: list[ParameterSpec]):
         names = [s.name for s in specs]
         if len(set(names)) != len(names):
