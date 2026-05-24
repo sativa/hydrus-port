@@ -492,7 +492,7 @@ def _run_convert(args: argparse.Namespace) -> int:
     return 0
 
 
-# ------------------------------------------------------------------ research / dndc
+# ------------------------------------------------------------------ research subcommand group
 
 
 def _cmd_dndc_list(args: argparse.Namespace) -> int:
@@ -533,11 +533,37 @@ def _cmd_dndc_to_forcing(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_research_subparser(sub: argparse._SubParsersAction) -> None:
-    """`hydrus research <subcmd>` — research-platform CLI surface."""
-    p_research = sub.add_parser("research", help="research-platform tools (M1+)")
-    rsub = p_research.add_subparsers(dest="research_cmd", required=True)
+def _cmd_soil_ptf(args: argparse.Namespace) -> int:
+    """Execute `hydrus research soil ptf`."""
+    from hydrus_research.ptf import texture_to_vg
+    parts = dict(p.split("=") for p in args.texture.split(","))
+    r = texture_to_vg(
+        sand_pct=float(parts["sand"]), silt_pct=float(parts["silt"]),
+        clay_pct=float(parts["clay"]),
+        bulk_density_g_cm3=args.bd, theta_33=args.theta_33,
+        theta_1500=args.theta_1500, organic_matter_pct=args.om,
+        method=args.method,
+    )
+    print(f"{'theta_r':12s} {'theta_s':12s} {'alpha':12s} {'n':12s} {'Ks':12s} method")
+    print(f"{r.theta_r:<12.4f} {r.theta_s:<12.4f} {r.alpha:<12.4f} "
+          f"{r.n:<12.4f} {r.Ks:<12.4f} {r.method}")
+    return 0
 
+
+def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
+    """`hydrus research <subcmd>` — research-platform CLI surface.
+
+    M1 adds: research dndc {list-presets, validate, to-forcing}
+    M2 adds: research soil ptf
+    """
+    p_research = sub.add_parser(
+        "research",
+        help="research-platform tools (DNDC seam, PTF, ...)",
+    )
+    rsub = p_research.add_subparsers(dest="research_cmd", required=True,
+                                     metavar="{dndc,soil}")
+
+    # ----- dndc (M1) ---------------------------------------------------
     p_dndc = rsub.add_parser("dndc", help="DNDC seam — validate / inspect")
     dsub = p_dndc.add_subparsers(dest="dndc_cmd", required=True)
 
@@ -560,6 +586,25 @@ def _build_research_subparser(sub: argparse._SubParsersAction) -> None:
         help="comma-separated days; default 0,1,2,3,4",
     )
     p_tf.set_defaults(_cmd=_cmd_dndc_to_forcing)
+
+    # ----- soil (M2) ---------------------------------------------------
+    p_soil = rsub.add_parser("soil", help="soil-library / PTF")
+    ssub = p_soil.add_subparsers(dest="soil_cmd", required=True)
+
+    p_ptf = ssub.add_parser("ptf", help="texture → van Genuchten parameters")
+    p_ptf.add_argument("--texture", required=True,
+                       help="comma-separated sand=N,silt=M,clay=K (percent)")
+    p_ptf.add_argument("--bd", type=float, default=None,
+                       help="bulk density g/cm³ (optional; enables ROSETTA H2)")
+    p_ptf.add_argument("--theta-33", type=float, default=None)
+    p_ptf.add_argument("--theta-1500", type=float, default=None)
+    p_ptf.add_argument("--om", type=float, default=None,
+                       help="organic matter pct")
+    p_ptf.add_argument("--method", default="rosetta3_auto",
+                       choices=["rosetta3_auto", "carsel_parrish", "wosten",
+                                "rosetta3_h1", "rosetta3_h2", "rosetta3_h3",
+                                "rosetta3_h4"])
+    p_ptf.set_defaults(_cmd=_cmd_soil_ptf)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -665,7 +710,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Path to inputs (for GRID.IN, optional)")
     pconv.set_defaults(func=_run_convert)
 
-    # ----- research (M1+) --------------------------------------------
+    # ----- research (M1 dndc + M2 soil/ptf) --------------------------
     _build_research_subparser(sub)
 
     return p
@@ -674,7 +719,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    # Research subcommands set `_cmd`; legacy subcommands set `func`.
+    # Research subcommands (M1 dndc + M2 soil) set `_cmd`; legacy uses `func`.
     if hasattr(args, "_cmd"):
         return args._cmd(args)
     return args.func(args)

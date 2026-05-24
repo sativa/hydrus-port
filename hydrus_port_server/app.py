@@ -119,7 +119,10 @@ if _FASTAPI_OK:
 # --------------------------------------------------------------------
 
 def build_app():
-    """Factory used by both `main()` (uvicorn) and tests (TestClient)."""
+    """Factory used by both `main()` (uvicorn) and tests (TestClient).
+
+    Registers /research/dndc/* (M1) and /research/ptf/* (M2) routers if the
+    corresponding hydrus_research sub-packages are installable."""
     if not _FASTAPI_OK:
         raise ImportError(
             "hydrus_port_server requires FastAPI. Install with:\n"
@@ -131,6 +134,13 @@ def build_app():
         CORSMiddleware,
         allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
+
+    # M2: Register the PTF research router
+    try:
+        from .routers.research_ptf import router as ptf_router
+        app.include_router(ptf_router, prefix="/research/ptf", tags=["research", "ptf"])
+    except ImportError:
+        pass
 
     @app.get("/api/health")
     def health():
@@ -223,7 +233,7 @@ def build_app():
     return app
 
 
-# Backward-compat alias (M2 branch uses the same name; keep both in sync)
+# Backward-compat alias (M2 branch added it; M1 keeps it for symmetry)
 create_app = build_app
 
 

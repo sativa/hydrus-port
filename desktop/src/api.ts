@@ -168,16 +168,16 @@ export function onJobStatus(
   return listen(`job://${id}/status`, (e) => cb(e.payload as any));
 }
 
-// M1 — DNDC seam REST endpoints. Base URL must match the running
-// hydrus-port-serve process; defaults to http://127.0.0.1:8765.
-// Set VITE_DNDC_BASE in the environment to override.
-const DNDC_BASE: string =
+// Research-layer REST endpoints. Both DNDC (M1) and PTF (M2) point at the
+// same FastAPI sidecar; override base URL via VITE_DNDC_BASE.
+const RESEARCH_BASE: string =
   (import.meta.env.VITE_DNDC_BASE as string | undefined) ??
   "http://127.0.0.1:8765";
 
+// ---- M1: DNDC seam --------------------------------------------------
 export const dndc = {
   async validate(inputs: unknown): Promise<{ ok: boolean; warnings?: string[] }> {
-    const r = await fetch(`${DNDC_BASE}/research/dndc/validate`, {
+    const r = await fetch(`${RESEARCH_BASE}/research/dndc/validate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(inputs),
@@ -191,7 +191,44 @@ export const dndc = {
   },
 
   async cropPresets(): Promise<Record<string, { feddes: unknown; root: unknown; description: string }>> {
-    const r = await fetch(`${DNDC_BASE}/research/dndc/crop-presets`);
+    const r = await fetch(`${RESEARCH_BASE}/research/dndc/crop-presets`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  },
+};
+
+// ---- M2: PTF / soil library ----------------------------------------
+export interface PTFRequest {
+  sand_pct: number;
+  silt_pct: number;
+  clay_pct: number;
+  bulk_density_g_cm3?: number;
+  theta_33?: number;
+  theta_1500?: number;
+  organic_matter_pct?: number;
+  organic_carbon_pct?: number;
+  topsoil?: boolean;
+  method?: "rosetta3_auto" | "carsel_parrish" | "wosten"
+         | "rosetta3_h1" | "rosetta3_h2" | "rosetta3_h3" | "rosetta3_h4";
+}
+
+export interface PTFResult {
+  theta_r: number; theta_s: number; alpha: number; n: number; Ks: number;
+  L: number; method: string; covariance: number[][] | null;
+}
+
+export const ptf = {
+  async predict(req: PTFRequest): Promise<PTFResult> {
+    const r = await fetch(`${RESEARCH_BASE}/research/ptf/predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+  async usdaClasses(): Promise<Record<string, { sand_pct: number; silt_pct: number; clay_pct: number }>> {
+    const r = await fetch(`${RESEARCH_BASE}/research/ptf/usda-classes`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return r.json();
   },
