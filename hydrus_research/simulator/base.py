@@ -86,8 +86,8 @@ class Simulator(ABC):
 
     @abstractmethod
     def observable_at(self, result: SimResult,
-                      spec: "ObservationSpec") -> float: ...
+                      spec: ObservationSpec) -> float: ...
 
     def batch_observables(self, result: SimResult,
-                          specs: "list[ObservationSpec]") -> np.ndarray:
+                          specs: list[ObservationSpec]) -> np.ndarray:
         return np.array([self.observable_at(result, s) for s in specs])
