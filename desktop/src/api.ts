@@ -167,3 +167,32 @@ export function onJobStatus(
 ): Promise<UnlistenFn> {
   return listen(`job://${id}/status`, (e) => cb(e.payload as any));
 }
+
+// M1 — DNDC seam REST endpoints. Base URL must match the running
+// hydrus-port-serve process; defaults to http://127.0.0.1:8765.
+// Set VITE_DNDC_BASE in the environment to override.
+const DNDC_BASE: string =
+  (import.meta.env.VITE_DNDC_BASE as string | undefined) ??
+  "http://127.0.0.1:8765";
+
+export const dndc = {
+  async validate(inputs: unknown): Promise<{ ok: boolean; warnings?: string[] }> {
+    const r = await fetch(`${DNDC_BASE}/research/dndc/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(inputs),
+    });
+    if (r.status === 422) {
+      const detail = await r.json();
+      throw new Error(`validation failed: ${JSON.stringify(detail)}`);
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+
+  async cropPresets(): Promise<Record<string, { feddes: unknown; root: unknown; description: string }>> {
+    const r = await fetch(`${DNDC_BASE}/research/dndc/crop-presets`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  },
+};

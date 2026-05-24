@@ -54,6 +54,7 @@ research = [
     "scikit-learn",
     "joblib",
     "pydantic>=2.5",
+    "PyYAML",
 ]
 research-uq = [
     "pymc>=5",

@@ -118,7 +118,8 @@ if _FASTAPI_OK:
 # App factory
 # --------------------------------------------------------------------
 
-def create_app():
+def build_app():
+    """Factory used by both `main()` (uvicorn) and tests (TestClient)."""
     if not _FASTAPI_OK:
         raise ImportError(
             "hydrus_port_server requires FastAPI. Install with:\n"
@@ -211,7 +212,19 @@ def create_app():
             raise HTTPException(404, f"file not found: {fname}")
         return FileResponse(p)
 
+    # M1: research/dndc/* router (only if hydrus_research is installed)
+    try:
+        from .routers.research_dndc import router as dndc_router
+        app.include_router(dndc_router, prefix="/research/dndc",
+                           tags=["research", "dndc"])
+    except ImportError:
+        pass     # hydrus_research extra not installed
+
     return app
+
+
+# Backward-compat alias (M2 branch uses the same name; keep both in sync)
+create_app = build_app
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -224,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: FastAPI not installed. Run: pip install 'hydrus-port[gui]'",
               file=sys.stderr)
         return 2
-    app = create_app()
+    app = build_app()
     uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
     return 0
 

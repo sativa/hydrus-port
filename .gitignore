@@ -33,3 +33,7 @@ tests/fixtures/**/inputs/out/
 tests/fixtures/**/inputs/Out/
 tests/fixtures/**/out/
 tests/fixtures/**/_SELECTOR_RT.IN
+
+# Test/demo artifacts
+.playwright-mcp/
+hydrus_gui_landing.png
