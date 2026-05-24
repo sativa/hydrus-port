@@ -6,7 +6,7 @@ back-transform happens here, not in the optimizer."""
 from __future__ import annotations
 from typing import Literal
 import numpy as np
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 
 
 Transform = Literal["linear", "log", "logit"]
