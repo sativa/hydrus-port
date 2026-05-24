@@ -166,3 +166,59 @@ class PlantNUptake(BaseModel):                        # #8 plant N uptake
         if self.mode == "external" and not self.callable_ref:
             raise ValueError("mode='external' requires callable_ref")
         return self
+
+
+class StateExchange(BaseModel):                       # #9 bidirectional state
+    z_grid_cm: list[float]
+    initial_theta: list[float] | None = None
+    initial_h: list[float] | None = None
+    initial_c: dict[str, list[float]] | None = None
+    initial_t: list[float] | None = None
+    writeback_daily: bool = False                     # True only in B2
+    writeback_path: Path | None = None
+
+    @model_validator(mode="after")
+    def _profiles_match_grid(self):
+        nz = len(self.z_grid_cm)
+        for fname in ("initial_theta", "initial_h", "initial_t"):
+            v = getattr(self, fname)
+            if v is not None and len(v) != nz:
+                raise ValueError(f"{fname} length {len(v)} != z_grid_cm length {nz}")
+        if self.initial_c is not None:
+            for sp, prof in self.initial_c.items():
+                if len(prof) != nz:
+                    raise ValueError(f"initial_c[{sp!r}] length {len(prof)} != z_grid_cm length {nz}")
+        return self
+
+
+class SoilTemp(BaseModel):                            # #10 soil temperature
+    enabled: bool = False
+    surface_t_daily_c: list[float] | None = None
+
+
+class Residue(BaseModel):                             # #11 residue / mulch
+    mulch_fraction: float = 0.0
+    residue_kg_ha: float = 0.0
+    e_reduction_factor: float = 1.0
+
+
+class DndcSeamInputs(BaseModel):
+    """Complete data contract DNDC → HYDRUS. Used by:
+       - manual GUI form (current)
+       - DndcLiveAdapter (future B2)
+       - CSV / YAML / JSON file ingestion (testing, batch)
+    """
+    model_config = ConfigDict(extra="allow")       # forward-compat buffer per spec §5.5
+
+    atm: AtmDaily
+    et: EtPartition
+    root: RootGrowth
+    feddes: FeddesParams
+    fert_events: list[FertEvent] = Field(default_factory=list)
+    irrig_events: list[IrrigEvent] = Field(default_factory=list)
+    n_transform: NTransformation
+    plant_n_uptake: PlantNUptake
+    state: StateExchange
+    soil_temp: SoilTemp = Field(default_factory=SoilTemp)
+    residue: Residue = Field(default_factory=Residue)
+    extras: dict = Field(default_factory=dict)     # extras-aware container (B2 surprises)

@@ -127,3 +127,64 @@ def test_plant_n_uptake_michaelis_menten():
 def test_plant_n_uptake_demand_requires_daily_demand():
     with pytest.raises(ValidationError):
         PlantNUptake(mode="demand_driven")
+
+
+from hydrus_research.dndc_seam.schema import (
+    StateExchange, SoilTemp, Residue, DndcSeamInputs,
+)
+
+
+def test_state_exchange_minimal():
+    s = StateExchange(z_grid_cm=[0.0, -10.0, -50.0, -100.0])
+    assert s.writeback_daily is False
+    assert s.initial_theta is None
+
+
+def test_state_exchange_initial_profile_length_must_match():
+    with pytest.raises(ValidationError):
+        StateExchange(z_grid_cm=[0.0, -10.0],
+                      initial_theta=[0.3, 0.32, 0.34])      # 3 vs 2 nodes
+
+
+def test_soil_temp_disabled_default():
+    s = SoilTemp()
+    assert s.enabled is False
+
+
+def test_residue_defaults_zero():
+    r = Residue()
+    assert r.mulch_fraction == 0.0
+    assert r.e_reduction_factor == 1.0
+
+
+def test_dndc_seam_inputs_parent_assembly():
+    """Build a minimal-valid DndcSeamInputs from the sub-models."""
+    di = DndcSeamInputs(
+        atm=AtmDaily(dates=[date(2026, 5, 1), date(2026, 5, 2)],
+                     precip_cm=[0.0, 0.3], pet_cm=[0.4, 0.5]),
+        et=EtPartition(mode="lai_beer", lai=[2.0, 2.2]),
+        root=RootGrowth(z_max_cm=50, growth_curve="logistic", days_to_zmax=30),
+        feddes=FeddesParams(h1=-15, h2=-30, h3_high=-325, h3_low=-600, h4=-8000),
+        n_transform=NTransformation(mode="constant_rates", k_nitrification_d=0.1),
+        plant_n_uptake=PlantNUptake(mode="passive_with_water"),
+        state=StateExchange(z_grid_cm=[0.0, -10.0, -50.0]),
+    )
+    assert di.fert_events == []
+    assert di.irrig_events == []
+    assert di.extras == {}
+
+
+def test_dndc_seam_inputs_round_trips_through_json():
+    di = DndcSeamInputs(
+        atm=AtmDaily(dates=[date(2026, 5, 1)], precip_cm=[0.0]),
+        et=EtPartition(mode="lai_beer", lai=[2.0]),
+        root=RootGrowth(z_max_cm=50, growth_curve="logistic", days_to_zmax=30),
+        feddes=FeddesParams(h1=-15, h2=-30, h3_high=-325, h3_low=-600, h4=-8000),
+        n_transform=NTransformation(mode="constant_rates", k_nitrification_d=0.1),
+        plant_n_uptake=PlantNUptake(mode="passive_with_water"),
+        state=StateExchange(z_grid_cm=[0.0]),
+    )
+    js = di.model_dump_json()
+    di2 = DndcSeamInputs.model_validate_json(js)
+    assert di2.atm.precip_cm == [0.0]
+    assert di2.root.z_max_cm == 50
