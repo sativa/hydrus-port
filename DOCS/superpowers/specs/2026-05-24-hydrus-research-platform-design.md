@@ -95,6 +95,29 @@ H1D_Src/
 └── pyproject.toml               # ● new optional extras
 ```
 
+### 1.1.1 GUI ↔ engine decoupling (load-bearing discipline)
+
+The GUI (`desktop/`) is **strictly optional**. The simulation engine
+(`hydrus1d/`, `swms2d/`, `hydrus_research/`, `hydrus_port/` CLI) must be
+fully usable without it — in headless servers, CI, batch jobs, notebooks,
+and (most importantly) inside the future B2 DNDC live-coupling loop where
+no GUI exists.
+
+Concretely:
+- **Allowed dependency direction:** GUI → REST (`hydrus_port_server`) → engine
+  (`hydrus_research`, `hydrus_port`, solvers). Engine never imports
+  anything from the GUI or REST layer.
+- **Every research workflow ships with a CLI subcommand AND a Python API.**
+  The GUI page is a third, optional consumer. If a feature is only
+  reachable from the GUI, that's a design smell — refactor.
+- **Optional extras enforce this at install time:** `pip install -e
+  '.[research]'` (no `[gui]`) must yield a fully functional engine. The
+  GUI's REST server lives in the `[gui]` extras group.
+- **Tests target the CLI / Python API first.** GUI / REST tests are wrappers.
+
+This discipline is what makes the future B2 coupling (DNDC drives the
+engine in-process, no GUI in the loop) tractable.
+
 ### 1.2 Dependency graph (strict; arrows go inward only)
 
 ```
