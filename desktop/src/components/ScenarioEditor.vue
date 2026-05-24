@@ -99,7 +99,7 @@ function applyPreset(idx: number, name: string) {
 }
 
 const tprintStr = computed({
-  get: () => scen.value?.time.print_times.join(" ") ?? "",
+  get: () => scen.value?.time.print_times.map(t => formatNum(t)).join(" ") ?? "",
   set: (s: string) => {
     if (!scen.value) return;
     const xs = s.split(/[\s,]+/).filter(Boolean).map(Number).filter(n => !isNaN(n));
@@ -107,6 +107,53 @@ const tprintStr = computed({
     markDirty();
   },
 });
+
+const nPrint = ref<number>(6);
+
+function formatNum(v: number): string {
+  // Round to ~5 significant digits to avoid float-noise tails ("0.30000000000000004")
+  if (v === 0) return "0";
+  const a = Math.abs(v);
+  if (a >= 1e-3 && a < 1e6) {
+    // Use up to 6 sig digits, strip trailing zeros after decimal
+    return Number(v.toPrecision(6)).toString();
+  }
+  return v.toExponential(3);
+}
+
+function genLinear() {
+  if (!scen.value) return;
+  const t0 = scen.value.time.t_init, t1 = scen.value.time.t_max;
+  const n = Math.max(1, Math.floor(nPrint.value));
+  if (!(t1 > t0)) return;
+  const out: number[] = [];
+  for (let i = 1; i <= n; i++) out.push(t0 + (t1 - t0) * (i / n));
+  scen.value.time.print_times = out.map(v => Number(v.toPrecision(6)));
+  markDirty();
+}
+
+function genLog() {
+  if (!scen.value) return;
+  const t0 = scen.value.time.t_init, t1 = scen.value.time.t_max;
+  const n = Math.max(1, Math.floor(nPrint.value));
+  if (!(t1 > Math.max(t0, 0))) return;
+  // Log space from max(t0, t1/10000) to t1 — early bias is useful for
+  // sharp infiltration fronts when most of the action is near t_init.
+  const start = Math.max(t0, t1 / 10000);
+  const out: number[] = [];
+  for (let i = 1; i <= n; i++) {
+    const f = i / n;
+    out.push(start * Math.pow(t1 / start, f));
+  }
+  scen.value.time.print_times = out.map(v => Number(v.toPrecision(6)));
+  markDirty();
+}
+
+function clearTPrint() {
+  if (!scen.value) return;
+  scen.value.time.print_times = [];
+  markDirty();
+}
 
 const dim = computed(() => scen.value?.geometry.kind ?? "1d");
 
@@ -288,11 +335,25 @@ function showVC(m: CanonicalMaterial): boolean {
             <input type="number" step="any" v-model.number="scen.time.t_max" @input="markDirty" />
           </label>
         </div>
-        <div class="row" style="margin-top: 6px">
-          <label class="wide">
-            Print times (space- or comma-separated)
-            <input type="text" v-model="tprintStr" class="mono wide" />
-          </label>
+        <div style="margin-top: 6px">
+          <div class="row small" style="gap: 6px; flex-wrap: wrap; margin-bottom: 4px">
+            <span class="muted">Print times ({{ scen.time.print_times.length }})</span>
+            <span class="muted">·</span>
+            <span class="muted">generate</span>
+            <input type="number" min="1" max="999" v-model.number="nPrint"
+                   style="width: 50px" />
+            <button class="secondary tiny" @click="genLinear"
+                    :title="`${nPrint} evenly-spaced times from t_init to t_max`">
+              Linear
+            </button>
+            <button class="secondary tiny" @click="genLog"
+                    :title="`${nPrint} log-spaced times (early-bias) from t_init to t_max`">
+              Log
+            </button>
+            <button class="secondary tiny" @click="clearTPrint">Clear</button>
+          </div>
+          <input type="text" v-model="tprintStr" class="mono wide"
+                 :placeholder="`e.g. ${scen.time.t_init} … ${scen.time.t_max}  (or use the generators above)`" />
         </div>
       </section>
 
