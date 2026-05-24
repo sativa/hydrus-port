@@ -167,3 +167,44 @@ export function onJobStatus(
 ): Promise<UnlistenFn> {
   return listen(`job://${id}/status`, (e) => cb(e.payload as any));
 }
+
+// M2: PTF REST wrappers — calls the FastAPI backend at /research/ptf/*
+
+export interface PTFRequest {                                           // M2:
+  sand_pct: number;                                                    // M2:
+  silt_pct: number;                                                    // M2:
+  clay_pct: number;                                                    // M2:
+  bulk_density_g_cm3?: number;                                         // M2:
+  theta_33?: number;                                                   // M2:
+  theta_1500?: number;                                                 // M2:
+  organic_matter_pct?: number;                                         // M2:
+  organic_carbon_pct?: number;                                         // M2:
+  topsoil?: boolean;                                                   // M2:
+  method?: "rosetta3_auto" | "carsel_parrish" | "wosten"              // M2:
+         | "rosetta3_h1" | "rosetta3_h2" | "rosetta3_h3" | "rosetta3_h4";  // M2:
+}                                                                      // M2:
+
+export interface PTFResult {                                           // M2:
+  theta_r: number; theta_s: number; alpha: number; n: number; Ks: number;  // M2:
+  L: number; method: string; covariance: number[][] | null;           // M2:
+}                                                                      // M2:
+
+const PTF_BASE = (import.meta.env.VITE_DNDC_BASE as string)           // M2:
+                 ?? "http://127.0.0.1:8765";                           // M2:
+
+export const ptf = {                                                   // M2:
+  async predict(req: PTFRequest): Promise<PTFResult> {                 // M2:
+    const r = await fetch(`${PTF_BASE}/research/ptf/predict`, {        // M2:
+      method: "POST",                                                  // M2:
+      headers: { "Content-Type": "application/json" },                // M2:
+      body: JSON.stringify(req),                                       // M2:
+    });                                                                // M2:
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);  // M2:
+    return r.json();                                                   // M2:
+  },                                                                   // M2:
+  async usdaClasses(): Promise<Record<string, { sand_pct: number; silt_pct: number; clay_pct: number }>> {  // M2:
+    const r = await fetch(`${PTF_BASE}/research/ptf/usda-classes`);   // M2:
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);                   // M2:
+    return r.json();                                                   // M2:
+  },                                                                   // M2:
+};                                                                     // M2:

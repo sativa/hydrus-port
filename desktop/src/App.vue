@@ -9,6 +9,7 @@ import Regression from "./components/Regression.vue";
 import Hovmoller1D from "./components/Hovmoller1D.vue";
 import MeshContour2D from "./components/MeshContour2D.vue";
 import ScenarioEditor from "./components/ScenarioEditor.vue";
+import SoilLibrary from "./pages/research/SoilLibrary.vue";           // M2:
 import { api, type JobMeta, type PythonInfo } from "./api";
 import { theme, toggleTheme } from "./theme";
 
@@ -25,7 +26,7 @@ const isTwoDimensional = computed(() => {
   return k === "swms2d" || k === "2d";
 });
 
-const rightTab = ref<"3d" | "editor">("editor");
+const rightTab = ref<"3d" | "editor" | "soil-library">("editor");     // M2: add soil-library
 const editorPath = ref<string | null>(null);
 function onScenarioSelected(path: string, kind: string) {
   // Editor handles 1d / 2d / 3d through the canonical Scenario schema:
@@ -153,9 +154,12 @@ function onJobUpdated(j: JobMeta) {
                   @click="rightTab = 'editor'">Parameters</button>
           <button class="tab" :class="{active: rightTab === '3d'}"
                   @click="rightTab = '3d'">3D mesh</button>
+          <button class="tab" :class="{active: rightTab === 'soil-library'}"
+                  @click="rightTab = 'soil-library'">Soil Library</button><!-- M2: -->
         </div>
         <ScenarioEditor v-if="rightTab === 'editor'"
                         :scenario-path="editorPath" />
+        <SoilLibrary v-else-if="rightTab === 'soil-library'" /><!-- M2: -->
         <MeshViewer3D v-else :job="job" />
       </section>
     </main>
