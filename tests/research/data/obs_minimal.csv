@@ -1,0 +1,4 @@
+name,kind,z_cm,time_day,value,sigma,weight,species
+theta_z20_d1,theta,20,1.0,0.31,0.02,1.0,
+theta_z40_d1,theta,40,1.0,0.28,0.02,1.0,
+no3_z20_d5,c,20,5.0,12.5,1.5,1.0,NO3
