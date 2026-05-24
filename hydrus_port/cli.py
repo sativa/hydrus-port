@@ -492,13 +492,64 @@ def _run_convert(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:  # M2:
+    """Register the 'research' subcommand group.                         # M2:
+
+    M2 adds: research soil ptf                                           # M2:
+    M1 will extend this with: research dndc ...  (via merge)             # M2:
+    Structure: sub → p_research → rsub → p_soil → ssub → p_ptf          # M2:
+    """                                                                  # M2:
+    p_research = sub.add_parser(                                         # M2:
+        "research",                                                      # M2:
+        help="Research platform tools (PTF, DNDC, ...)",                 # M2:
+    )                                                                    # M2:
+    rsub = p_research.add_subparsers(dest="research_cmd", required=True, # M2:
+                                     metavar="{soil,...}")               # M2:
+
+    # ----- soil ---------------------------------------------------     # M2:
+    p_soil = rsub.add_parser("soil", help="soil-library / PTF")         # M2:
+    ssub = p_soil.add_subparsers(dest="soil_cmd", required=True)        # M2:
+
+    p_ptf = ssub.add_parser("ptf", help="texture → van Genuchten parameters")  # M2:
+    p_ptf.add_argument("--texture", required=True,                       # M2:
+                       help="comma-separated sand=N,silt=M,clay=K (percent)")  # M2:
+    p_ptf.add_argument("--bd", type=float, default=None,                 # M2:
+                       help="bulk density g/cm³ (optional; enables ROSETTA H2)")  # M2:
+    p_ptf.add_argument("--theta-33", type=float, default=None)           # M2:
+    p_ptf.add_argument("--theta-1500", type=float, default=None)         # M2:
+    p_ptf.add_argument("--om", type=float, default=None,                 # M2:
+                       help="organic matter pct")                        # M2:
+    p_ptf.add_argument("--method", default="rosetta3_auto",              # M2:
+                       choices=["rosetta3_auto", "carsel_parrish", "wosten",  # M2:
+                                "rosetta3_h1", "rosetta3_h2", "rosetta3_h3",  # M2:
+                                "rosetta3_h4"])                          # M2:
+    p_ptf.set_defaults(_cmd=_cmd_soil_ptf)                               # M2:
+
+
+def _cmd_soil_ptf(args: argparse.Namespace) -> int:                      # M2:
+    """Execute `hydrus research soil ptf`."""                            # M2:
+    from hydrus_research.ptf import texture_to_vg                        # M2:
+    parts = dict(p.split("=") for p in args.texture.split(","))          # M2:
+    r = texture_to_vg(                                                   # M2:
+        sand_pct=float(parts["sand"]), silt_pct=float(parts["silt"]),    # M2:
+        clay_pct=float(parts["clay"]),                                   # M2:
+        bulk_density_g_cm3=args.bd, theta_33=args.theta_33,             # M2:
+        theta_1500=args.theta_1500, organic_matter_pct=args.om,          # M2:
+        method=args.method,                                              # M2:
+    )                                                                    # M2:
+    print(f"{'theta_r':12s} {'theta_s':12s} {'alpha':12s} {'n':12s} {'Ks':12s} method")  # M2:
+    print(f"{r.theta_r:<12.4f} {r.theta_s:<12.4f} {r.alpha:<12.4f} "   # M2:
+          f"{r.n:<12.4f} {r.Ks:<12.4f} {r.method}")                     # M2:
+    return 0                                                             # M2:
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="hydrus",
         description="HYDRUS-port unified entry: 1D / 2D / 3D Richards.",
     )
     sub = p.add_subparsers(dest="kind", required=True,
-                           metavar="{1d,2d,3d,run,test,scenario,convert}")
+                           metavar="{1d,2d,3d,run,test,scenario,convert,research}")
 
     # ----- 1d ---------------------------------------------------------
     p1d = sub.add_parser(
@@ -595,12 +646,18 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Path to inputs (for GRID.IN, optional)")
     pconv.set_defaults(func=_run_convert)
 
+    # ----- research (M2: soil/ptf; M1 extends with dndc) --           # M2:
+    _build_research_subparser(sub)                                       # M2:
+
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # M2: research subcommands use `_cmd`; legacy subcommands use `func`
+    if hasattr(args, "_cmd"):                                            # M2:
+        return args._cmd(args)                                           # M2:
     return args.func(args)
 
 
