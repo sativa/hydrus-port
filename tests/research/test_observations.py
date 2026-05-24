@@ -86,3 +86,26 @@ def test_obs_node_loader_reads_infiltr_v1():
     # theta values lie in a physical range [0, 1)
     theta_vals = np.array([v for s, v in zip(obs.specs, obs.values) if s.kind == "theta"])
     assert (theta_vals >= 0).all() and (theta_vals < 1.0).all()
+
+
+def test_observation_spec_z_location_only_for_1d():
+    s = ObservationSpec(name="theta_z20", kind="theta",
+                        location={"z_cm": 20.0}, time_day=1.0)
+    assert s.location["z_cm"] == 20.0
+
+
+def test_observation_spec_node_location_for_2d_3d():
+    s = ObservationSpec(name="h_node17", kind="h",
+                        location={"node": 17}, time_day=3.0)
+    assert s.location["node"] == 17
+
+
+def test_observation_spec_rejects_empty_location():
+    with pytest.raises(Exception):
+        ObservationSpec(name="bad", kind="theta", location={}, time_day=1.0)
+
+
+def test_observation_spec_rejects_unknown_location_key():
+    with pytest.raises(Exception):
+        ObservationSpec(name="bad", kind="theta",
+                        location={"phi_cm": 20.0}, time_day=1.0)
