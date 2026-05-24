@@ -166,19 +166,22 @@ pub async fn start_simulation(
     cmd.arg("-u").arg("-m").arg("hydrus_port.cli");
     match args.kind.as_str() {
         "hydrus1d" | "1d" => {
-            cmd.arg("1d").arg(&input_dir).arg("-o").arg(&output_dir);
+            cmd.arg("1d").arg(&input_dir).arg("-o").arg(&output_dir)
+               .arg("--csv");
         }
         "swms2d" | "2d" => {
-            cmd.arg("2d").arg(&input_dir).arg("-o").arg(&output_dir);
+            cmd.arg("2d").arg(&input_dir).arg("-o").arg(&output_dir)
+               .arg("--quiet").arg("--csv");
         }
         "richards3d" | "3d" => {
             // input_dir is the path to a scenario.json (the picker
             // routes here when the user selects richards3d_box).
             // Pre-existing .py fallback: invoke the demo directly.
             if input_dir.extension().and_then(|s| s.to_str()) == Some("json") {
-                cmd.arg("run").arg(&input_dir).arg("-o").arg(&output_dir);
+                cmd.arg("run").arg(&input_dir).arg("-o").arg(&output_dir)
+                   .arg("--csv");
             } else {
-                cmd.arg("3d");
+                cmd.arg("3d").arg("--csv");
             }
         }
         other => return Err(format!("Unknown kind: {other}")),

@@ -30,6 +30,8 @@ def _run_1d(args: argparse.Namespace) -> int:
     out = args.output_dir or _default_out(args.input_dir)
     out.mkdir(parents=True, exist_ok=True)
     run_simulation(input_dir=str(args.input_dir), output_dir=str(out))
+    if getattr(args, "csv", False):
+        _emit_csv(out, args.input_dir)
     return 0
 
 
@@ -45,7 +47,26 @@ def _run_2d(args: argparse.Namespace) -> int:
         write_vtk=args.vtk,
     )
     sim.run(verbose=not args.quiet)
+    if getattr(args, "csv", False):
+        _emit_csv(out, args.input_dir)
     return 0
+
+
+def _emit_csv(out_dir: Path, input_dir: Path | None = None) -> None:
+    """Run the CSV converter on out_dir; pass GRID.IN if available for
+    SWMS_2D field exports (so x/z columns are populated)."""
+    from .csv_export import convert_output_dir
+    grid_path = None
+    if input_dir is not None:
+        for p in Path(input_dir).iterdir():
+            if p.name.lower() == "grid.in":
+                grid_path = p
+                break
+    written = convert_output_dir(out_dir, grid_path=grid_path)
+    if written:
+        print(f"wrote {len(written)} CSV file(s):", file=sys.stderr)
+        for p in written:
+            print(f"  {p}", file=sys.stderr)
 
 
 def _run_3d(args: argparse.Namespace) -> int:
@@ -53,7 +74,11 @@ def _run_3d(args: argparse.Namespace) -> int:
     # mesh-driven scenario format is defined we can dispatch on that.
     if args.input_dir is None:
         from tests.validate_richards3d import main as r3d_demo
-        return r3d_demo()
+        rc = r3d_demo()
+        if getattr(args, "csv", False):
+            r3d_out = _repo_path("tests", "fixtures", "richards3d_box", "out")
+            _emit_csv(r3d_out)
+        return rc
     raise SystemExit(
         "3D mesh-driven inputs are not wired in yet. For now run "
         "`hydrus 3d` (no args) to execute the synthetic box demo."
@@ -437,7 +462,33 @@ def _run_case(args: argparse.Namespace) -> int:
             r3d.run(scenario, out)
         else:
             raise SystemExit(f"unknown scenario dimension {scenario.dimension!r}")
+    if getattr(args, "csv", False):
+        # GRID.IN may live in the canonical Geometry2D; for SWMS_2D
+        # we wrote a GRID.IN into the temp dir, but it's gone now —
+        # the converter falls back gracefully without grid_path.
+        _emit_csv(Path(out))
     print(f"output → {out}", file=sys.stderr)
+    return 0
+
+
+def _run_convert(args: argparse.Namespace) -> int:
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    if not out_dir.is_dir():
+        raise SystemExit(f"not a directory: {out_dir}")
+    grid_path = None
+    if args.input_dir:
+        for p in Path(args.input_dir).iterdir():
+            if p.name.lower() == "grid.in":
+                grid_path = p
+                break
+    from .csv_export import convert_output_dir
+    written = convert_output_dir(out_dir, grid_path=grid_path)
+    if not written:
+        print("no recognised .out files in this directory", file=sys.stderr)
+        return 1
+    print(f"wrote {len(written)} CSV file(s):", file=sys.stderr)
+    for p in written:
+        print(f"  {p}", file=sys.stderr)
     return 0
 
 
@@ -447,7 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="HYDRUS-port unified entry: 1D / 2D / 3D Richards.",
     )
     sub = p.add_subparsers(dest="kind", required=True,
-                           metavar="{1d,2d,3d,run,test,scenario}")
+                           metavar="{1d,2d,3d,run,test,scenario,convert}")
 
     # ----- 1d ---------------------------------------------------------
     p1d = sub.add_parser(
@@ -457,6 +508,8 @@ def build_parser() -> argparse.ArgumentParser:
     p1d.add_argument("input_dir", type=Path,
                      help="Directory containing Selector.in and Profile.dat")
     p1d.add_argument("-o", "--output-dir", type=Path, default=None)
+    p1d.add_argument("--csv", action="store_true",
+                     help="Emit tidy long-format CSV next to each .OUT")
     p1d.set_defaults(func=_run_1d)
 
     # ----- 2d ---------------------------------------------------------
@@ -477,6 +530,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Anderson buffer depth (default 3)")
     p2d.add_argument("--banded", action="store_true",
                      help="Fortran banded-Gauss solver (else SciPy spsolve)")
+    p2d.add_argument("--csv", action="store_true",
+                     help="Emit tidy long-format CSV next to each .out")
     p2d.set_defaults(func=_run_2d)
 
     # ----- 3d ---------------------------------------------------------
@@ -487,6 +542,8 @@ def build_parser() -> argparse.ArgumentParser:
     p3d.add_argument("input_dir", type=Path, nargs="?", default=None,
                      help="Reserved for future mesh-driven scenarios")
     p3d.add_argument("-o", "--output-dir", type=Path, default=None)
+    p3d.add_argument("--csv", action="store_true",
+                     help="Emit tidy long-format CSV from the .pvd VTU series")
     p3d.set_defaults(func=_run_3d)
 
     # ----- test -------------------------------------------------------
@@ -523,7 +580,20 @@ def build_parser() -> argparse.ArgumentParser:
     prun.add_argument("case", type=Path, help="Canonical scenario JSON file")
     prun.add_argument("-o", "--output-dir", type=Path, default=None)
     prun.add_argument("--quiet", action="store_true")
+    prun.add_argument("--csv", action="store_true",
+                      help="Emit tidy long-format CSV next to outputs")
     prun.set_defaults(func=_run_case)
+
+    # ----- convert ----------------------------------------------------
+    pconv = sub.add_parser(
+        "convert",
+        help="Convert legacy .OUT files in a directory to tidy long CSV",
+    )
+    pconv.add_argument("out_dir", type=Path,
+                       help="Directory containing .OUT files to convert")
+    pconv.add_argument("--input-dir", type=Path, default=None,
+                       help="Path to inputs (for GRID.IN, optional)")
+    pconv.set_defaults(func=_run_convert)
 
     return p
 
