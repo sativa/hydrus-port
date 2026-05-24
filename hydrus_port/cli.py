@@ -492,13 +492,83 @@ def _run_convert(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ research / dndc
+
+
+def _cmd_dndc_list(args: argparse.Namespace) -> int:
+    from hydrus_research.dndc_seam.presets import list_crop_presets, load_crop_preset
+
+    for name in list_crop_presets():
+        _, _, desc = load_crop_preset(name)
+        print(f"  {name:12s} — {desc}")
+    return 0
+
+
+def _cmd_dndc_validate(args: argparse.Namespace) -> int:
+    from hydrus_research.dndc_seam import DndcSeamInputs
+    from pydantic import ValidationError
+
+    try:
+        DndcSeamInputs.model_validate_json(open(args.json_path).read())
+    except ValidationError as e:
+        print(f"INVALID: {e}", file=sys.stderr)
+        return 1
+    print("ok — input is valid")
+    return 0
+
+
+def _cmd_dndc_to_forcing(args: argparse.Namespace) -> int:
+    import numpy as _np
+    from hydrus_research.dndc_seam import DndcSeamInputs, to_forcing
+
+    di = DndcSeamInputs.model_validate_json(open(args.json_path).read())
+    sim_times = _np.array([float(x) for x in args.sim_times.split(",")])
+    f = to_forcing(di, sim_times)
+    print(
+        f"Forcing built: times[{f.times_days.shape}], "
+        f"precip[{f.precip_cm_per_day.sum():.3f}cm total], "
+        f"pet[{f.pet_cm_per_day.sum():.3f}cm total], "
+        f"events: {len(f.irrigation_events)} irrig, {len(f.fert_events)} fert"
+    )
+    return 0
+
+
+def _build_research_subparser(sub: argparse._SubParsersAction) -> None:
+    """`hydrus research <subcmd>` — research-platform CLI surface."""
+    p_research = sub.add_parser("research", help="research-platform tools (M1+)")
+    rsub = p_research.add_subparsers(dest="research_cmd", required=True)
+
+    p_dndc = rsub.add_parser("dndc", help="DNDC seam — validate / inspect")
+    dsub = p_dndc.add_subparsers(dest="dndc_cmd", required=True)
+
+    p_list = dsub.add_parser("list-presets", help="list available crop presets")
+    p_list.set_defaults(_cmd=_cmd_dndc_list)
+
+    p_val = dsub.add_parser("validate", help="validate a DndcSeamInputs JSON file")
+    p_val.add_argument("json_path")
+    p_val.set_defaults(_cmd=_cmd_dndc_validate)
+
+    p_tf = dsub.add_parser(
+        "to-forcing",
+        help="materialise a Forcing for inspection (writes summary)",
+    )
+    p_tf.add_argument("json_path")
+    p_tf.add_argument(
+        "--sim-times",
+        type=str,
+        default="0,1,2,3,4",
+        help="comma-separated days; default 0,1,2,3,4",
+    )
+    p_tf.set_defaults(_cmd=_cmd_dndc_to_forcing)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="hydrus",
         description="HYDRUS-port unified entry: 1D / 2D / 3D Richards.",
     )
     sub = p.add_subparsers(dest="kind", required=True,
-                           metavar="{1d,2d,3d,run,test,scenario,convert}")
+                           metavar="{1d,2d,3d,run,test,scenario,convert,research}")
 
     # ----- 1d ---------------------------------------------------------
     p1d = sub.add_parser(
@@ -595,12 +665,18 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Path to inputs (for GRID.IN, optional)")
     pconv.set_defaults(func=_run_convert)
 
+    # ----- research (M1+) --------------------------------------------
+    _build_research_subparser(sub)
+
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Research subcommands set `_cmd`; legacy subcommands set `func`.
+    if hasattr(args, "_cmd"):
+        return args._cmd(args)
     return args.func(args)
 
 
