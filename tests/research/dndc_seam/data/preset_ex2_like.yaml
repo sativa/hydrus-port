@@ -1,0 +1,28 @@
+atm:
+  dates: ["2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05"]
+  precip_cm: [0.0, 0.0, 0.0, 0.0, 0.0]
+  pet_cm:    [0.0, 0.0, 0.0, 0.0, 0.0]
+et:
+  mode: lai_beer
+  lai: [0.0, 0.0, 0.0, 0.0, 0.0]
+  extinction_k: 0.6
+root:
+  z_max_cm: 50
+  growth_curve: logistic
+  days_to_zmax: 30
+  density_profile: linear_decline
+feddes:
+  h1: -15
+  h2: -30
+  h3_high: -325
+  h3_low:  -600
+  h4: -8000
+  pet_high_cm_d: 0.5
+  pet_low_cm_d:  0.1
+n_transform:
+  mode: constant_rates
+  k_nitrification_d: 0.1
+plant_n_uptake:
+  mode: passive_with_water
+state:
+  z_grid_cm: [0.0]
