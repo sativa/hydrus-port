@@ -1,0 +1,108 @@
+# Crop presets — Feddes water-stress parameters and root growth defaults.
+# Sources: HYDRUS-1D 4.08 manual Appendix A; FAO-56 Table 22 (Kc tables).
+# Numbers are typical mid-season values; users SHOULD override per-site.
+
+maize:
+  description: Maize / corn (Zea mays). Mid-season Kcb ≈ 1.15.
+  feddes: { h1: -15, h2: -30, h3_high: -325, h3_low: -600, h4: -8000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 100, growth_curve: logistic, days_to_zmax: 60,
+          density_profile: linear_decline }
+
+wheat:
+  description: Winter / spring wheat (Triticum aestivum).
+  feddes: { h1: -1, h2: -1, h3_high: -500, h3_low: -900, h4: -16000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 120, growth_curve: logistic, days_to_zmax: 80,
+          density_profile: linear_decline }
+
+rice:
+  description: Paddy rice (Oryza sativa); shallow root system, anaerobic-tolerant.
+  feddes: { h1: 100, h2: 50, h3_high: -160, h3_low: -250, h4: -15000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 40, growth_curve: logistic, days_to_zmax: 50,
+          density_profile: linear_decline }
+
+soybean:
+  description: Soybean (Glycine max).
+  feddes: { h1: -1, h2: -1, h3_high: -750, h3_low: -2000, h4: -16000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 100, growth_curve: logistic, days_to_zmax: 60,
+          density_profile: linear_decline }
+
+cotton:
+  description: Cotton (Gossypium hirsutum). Deep tap root.
+  feddes: { h1: -1, h2: -1, h3_high: -500, h3_low: -1000, h4: -15000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 150, growth_curve: logistic, days_to_zmax: 80,
+          density_profile: exponential, density_param: 0.02 }
+
+tomato:
+  description: Greenhouse / field tomato (Solanum lycopersicum).
+  feddes: { h1: -1, h2: -1, h3_high: -800, h3_low: -1500, h4: -8000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 80, growth_curve: logistic, days_to_zmax: 50,
+          density_profile: linear_decline }
+
+potato:
+  description: Potato (Solanum tuberosum).
+  feddes: { h1: -1, h2: -10, h3_high: -200, h3_low: -800, h4: -10000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 60, growth_curve: logistic, days_to_zmax: 50,
+          density_profile: linear_decline }
+
+grass:
+  description: Pasture grass (cool / warm season). Conservative defaults.
+  feddes: { h1: -10, h2: -25, h3_high: -200, h3_low: -800, h4: -8000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 50, growth_curve: linear, days_to_zmax: 30,
+          density_profile: exponential, density_param: 0.03 }
+
+alfalfa:
+  description: Alfalfa (Medicago sativa). Very deep root.
+  feddes: { h1: -1, h2: -1, h3_high: -1500, h3_low: -3000, h4: -16000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 200, growth_curve: logistic, days_to_zmax: 120,
+          density_profile: exponential, density_param: 0.015 }
+
+barley:
+  description: Barley (Hordeum vulgare).
+  feddes: { h1: -1, h2: -1, h3_high: -500, h3_low: -900, h4: -16000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 100, growth_curve: logistic, days_to_zmax: 65,
+          density_profile: linear_decline }
+
+sugarbeet:
+  description: Sugar beet (Beta vulgaris).
+  feddes: { h1: -1, h2: -1, h3_high: -500, h3_low: -1000, h4: -16000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 80, growth_curve: logistic, days_to_zmax: 70,
+          density_profile: linear_decline }
+
+sunflower:
+  description: Sunflower (Helianthus annuus).
+  feddes: { h1: -1, h2: -1, h3_high: -800, h3_low: -1500, h4: -15000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 120, growth_curve: logistic, days_to_zmax: 70,
+          density_profile: linear_decline }
+
+canola:
+  description: Canola / oilseed rape (Brassica napus).
+  feddes: { h1: -1, h2: -1, h3_high: -500, h3_low: -1000, h4: -15000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 100, growth_curve: logistic, days_to_zmax: 70,
+          density_profile: linear_decline }
+
+sorghum:
+  description: Sorghum (Sorghum bicolor). Drought-tolerant C4.
+  feddes: { h1: -15, h2: -30, h3_high: -325, h3_low: -600, h4: -10000,
+            pet_high_cm_d: 0.5, pet_low_cm_d: 0.1 }
+  root: { z_max_cm: 100, growth_curve: logistic, days_to_zmax: 55,
+          density_profile: linear_decline }
+
+bare_soil:
+  description: Bare soil — no transpiration. Use for evaporation-only studies.
+  feddes: { h1: 0, h2: 0, h3_high: 0, h3_low: 0, h4: 0,
+            pet_high_cm_d: 0.0, pet_low_cm_d: 0.0 }
+  root: { z_max_cm: 0.1, growth_curve: linear, days_to_zmax: 1,
+          density_profile: uniform }
