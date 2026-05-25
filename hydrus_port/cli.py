@@ -650,6 +650,82 @@ def _cmd_research_worker(args: argparse.Namespace) -> int:
                       worker_name=args.name)
 
 
+def _cmd_research_sensitize(args: argparse.Namespace) -> int:
+    """Execute `hydrus research sensitize` — global sensitivity analysis."""
+    import json as _json
+    from pathlib import Path as _P
+    from hydrus_research.parameters import ParameterSpec, ParameterMap
+    from hydrus_research.observations import ObservationSpec
+    from hydrus_research.simulator import make_forward
+    from hydrus_research.simulator.hydrus1d_adapter import Hydrus1DSimulator
+    from hydrus_port.adapters.hydrus1d import load as _load_h1d
+
+    # Parse --param specs: target:lo:hi[:transform]
+    specs = []
+    for s in args.param:
+        parts = s.split(":")
+        target, lo, hi = parts[0], float(parts[1]), float(parts[2])
+        transform = parts[3] if len(parts) > 3 else "linear"
+        name = target.rsplit(".", 1)[-1]
+        specs.append(ParameterSpec(name=name, target=target,
+                                   bounds=(lo, hi), transform=transform))
+    pm = ParameterMap(specs)
+
+    # Parse --obs specs (kind@-Ncm,t=T format; semicolon-separated)
+    obs_specs = []
+    for chunk in args.obs.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        kind, _, rest = chunk.partition("@")
+        loc_part, _, t_part = rest.partition(",t=")
+        z_cm = float(loc_part.rstrip("cm"))
+        t = float(t_part)
+        obs_specs.append(ObservationSpec(
+            name=f"{kind}_{loc_part}_{t}",
+            kind=kind,
+            location={"z_cm": z_cm},
+            time_day=t,
+        ))
+
+    # Build forward
+    template = _load_h1d(_P(args.scenario_dir)).to_dict()
+    sim = Hydrus1DSimulator()
+    forward = make_forward(sim, pm, template_scenario=template,
+                           forcing=None, ic=None,
+                           obs_specs=obs_specs)
+    obs_names = [o.name for o in obs_specs]
+
+    # Run sensitivity analysis via the chosen method
+    if args.method == "morris":
+        from hydrus_research.sensitivity import morris_screen
+        r = morris_screen(forward, pm, obs_names,
+                          n_trajectories=args.n, seed=args.seed,
+                          n_workers=args.workers)
+    elif args.method == "sobol":
+        from hydrus_research.sensitivity import sobol_decompose
+        r = sobol_decompose(forward, pm, obs_names,
+                            n_base=args.n, seed=args.seed,
+                            n_workers=args.workers)
+    elif args.method == "fast":
+        from hydrus_research.sensitivity import fast_indices
+        r = fast_indices(forward, pm, obs_names,
+                         n=args.n, seed=args.seed,
+                         n_workers=args.workers)
+    else:  # pawn
+        from hydrus_research.sensitivity import pawn_kde
+        r = pawn_kde(forward, pm, obs_names,
+                     n=args.n, seed=args.seed,
+                     n_workers=args.workers)
+
+    # Write output JSON
+    out = _P(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_json.dumps(r.model_dump(), indent=2))
+    print(f"sensitivity ({args.method}) written to {out}")
+    return 0
+
+
 def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
     """`hydrus research <subcmd>` — research-platform CLI surface.
 
@@ -742,6 +818,21 @@ def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
     p_worker.add_argument("--name", default=None,
                           help="worker name shown in master log")
     p_worker.set_defaults(_cmd=_cmd_research_worker)
+
+    # ----- sensitize (M4) -----------------------------------------------
+    p_sens = rsub.add_parser("sensitize", help="global sensitivity analysis")
+    p_sens.add_argument("scenario_dir", help="scenario inputs directory")
+    p_sens.add_argument("--method", required=True,
+                        choices=["morris", "sobol", "fast", "pawn"])
+    p_sens.add_argument("--param", action="append", required=True,
+                        help="target:lo:hi[:transform]; repeat for multi-D")
+    p_sens.add_argument("--obs", required=True,
+                        help="semicolon-separated obs specs (kind@-Ncm,t=T;...)")
+    p_sens.add_argument("--n", type=int, default=100)
+    p_sens.add_argument("--workers", type=int, default=1)
+    p_sens.add_argument("--seed", type=int, default=None)
+    p_sens.add_argument("--out", required=True, help="output JSON path")
+    p_sens.set_defaults(_cmd=_cmd_research_sensitize)
 
 
 def build_parser() -> argparse.ArgumentParser:

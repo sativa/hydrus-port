@@ -287,3 +287,45 @@ export const batch = {
     return `${RESEARCH_BASE}/research/batch/${jobId}/result`;
   },
 };
+
+// ---- M4: Sensitivity analysis ---------------------------------------
+export interface SensitivityRequest {
+  scenario_dir: string;
+  params: BatchParamSpec[];
+  obs: BatchObsSpec[];
+  n: number;
+  workers: number;
+  seed?: number;
+  num_levels?: number;
+  calc_second_order?: boolean;
+  m?: number;
+  s?: number;
+}
+
+export interface SensitivityResult {
+  method: "morris" | "sobol" | "fast" | "pawn";
+  param_names: string[];
+  obs_names: string[];
+  indices: Record<string, number[][] | number[]>;
+  sample_size: number;
+  forward_cost_s: number;
+  diagnostics: Record<string, any>;
+}
+
+export const sensitivity = {
+  async run(
+    method: "morris" | "sobol" | "fast" | "pawn",
+    req: SensitivityRequest,
+  ): Promise<SensitivityResult> {
+    const r = await fetch(
+      `${RESEARCH_BASE}/research/sensitivity/${method}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+      },
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+};
