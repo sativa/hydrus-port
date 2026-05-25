@@ -233,3 +233,57 @@ export const ptf = {
     return r.json();
   },
 };
+
+// ---- M3: Batch sweep REST endpoints ---------------------------------
+export interface BatchParamSpec {
+  name: string;
+  target: string;
+  bounds: [number, number];
+  transform?: "linear" | "log" | "logit";
+}
+
+export interface BatchObsSpec {
+  name: string;
+  kind: "theta" | "h" | "c" | "flux" | "cumulative_flux" | "concentration_flux";
+  location: Record<string, number | number[]>;
+  time_day: number;
+}
+
+export interface BatchStartRequest {
+  scenario_dir: string;
+  params: BatchParamSpec[];
+  obs: BatchObsSpec[];
+  n: number;
+  sampler: "lhs" | "grid" | "uniform";
+  workers: number;
+  seed?: number;
+}
+
+export interface BatchStatus {
+  state: "pending" | "running" | "done" | "failed";
+  n_total: number;
+  n_done: number;
+  out_path: string;
+  error: string | null;
+  n_failed?: number;
+}
+
+export const batch = {
+  async start(req: BatchStartRequest): Promise<{ job_id: string }> {
+    const r = await fetch(`${RESEARCH_BASE}/research/batch/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+  async status(jobId: string): Promise<BatchStatus> {
+    const r = await fetch(`${RESEARCH_BASE}/research/batch/${jobId}/status`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  },
+  resultUrl(jobId: string): string {
+    return `${RESEARCH_BASE}/research/batch/${jobId}/result`;
+  },
+};

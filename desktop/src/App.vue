@@ -11,6 +11,7 @@ import MeshContour2D from "./components/MeshContour2D.vue";
 import ScenarioEditor from "./components/ScenarioEditor.vue";
 import DNDCForms from "./pages/research/DNDCForms.vue";
 import SoilLibrary from "./pages/research/SoilLibrary.vue";
+import BatchSweep from "./pages/research/BatchSweep.vue";
 import { api, type JobMeta, type PythonInfo } from "./api";
 import { theme, toggleTheme } from "./theme";
 
@@ -27,7 +28,7 @@ const isTwoDimensional = computed(() => {
   return k === "swms2d" || k === "2d";
 });
 
-const rightTab = ref<"3d" | "editor" | "dndc" | "soil-library">("editor");
+const rightTab = ref<"3d" | "editor" | "dndc" | "soil-library" | "batch">("editor");
 const editorPath = ref<string | null>(null);
 function onScenarioSelected(path: string, kind: string) {
   // Editor handles 1d / 2d / 3d through the canonical Scenario schema:
@@ -159,11 +160,14 @@ function onJobUpdated(j: JobMeta) {
                   @click="rightTab = 'dndc'">DNDC Inputs</button>
           <button class="tab" :class="{active: rightTab === 'soil-library'}"
                   @click="rightTab = 'soil-library'">Soil Library</button>
+          <button class="tab" :class="{active: rightTab === 'batch'}"
+                  @click="rightTab = 'batch'">Batch Sweep</button>
         </div>
         <ScenarioEditor v-if="rightTab === 'editor'"
                         :scenario-path="editorPath" />
         <DNDCForms v-else-if="rightTab === 'dndc'" />
         <SoilLibrary v-else-if="rightTab === 'soil-library'" />
+        <BatchSweep v-else-if="rightTab === 'batch'" />
         <MeshViewer3D v-else :job="job" />
       </section>
     </main>
