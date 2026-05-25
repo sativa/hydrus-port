@@ -889,6 +889,34 @@ def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
     p_inv.add_argument("--out", required=True, help="output JSON path")
     p_inv.set_defaults(_cmd=_cmd_research_invert)
 
+    # ----- uq (M6) ---------------------------------------------------
+    p_uq = rsub.add_parser("uq", help="uncertainty quantification")
+    usub = p_uq.add_subparsers(dest="uq_cmd", required=True)
+
+    p_glue = usub.add_parser("glue", help="GLUE filter on an existing batch parquet")
+    p_glue.add_argument("batch_parquet", help="M3 BatchResult parquet path")
+    p_glue.add_argument("--obs", required=True, help="comma-separated obs values")
+    p_glue.add_argument("--sigmas", required=True, help="comma-separated obs sigmas")
+    p_glue.add_argument("--cutoff", type=float, default=0.5)
+    p_glue.add_argument("--out", required=True, help="output JSON path")
+    p_glue.set_defaults(_cmd=_cmd_uq_glue)
+
+
+def _cmd_uq_glue(args: argparse.Namespace) -> int:
+    import json as _json
+    from pathlib import Path as _P
+    import numpy as _np
+    from hydrus_research.batch import BatchResult
+    from hydrus_research.uq import glue_filter
+    br = BatchResult.from_parquet(_P(args.batch_parquet))
+    obs = _np.array([float(x) for x in args.obs.split(",")])
+    sig = _np.array([float(x) for x in args.sigmas.split(",")])
+    r = glue_filter(br, obs_values=obs, obs_sigmas=sig,
+                    likelihood_cutoff=args.cutoff)
+    _P(args.out).write_text(_json.dumps(r.model_dump(), indent=2))
+    print(f"GLUE kept {r.n_samples} of {r.diagnostics['n_total']} → {args.out}")
+    return 0
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(

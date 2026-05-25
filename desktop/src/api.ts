@@ -369,3 +369,37 @@ export const inversion = {
     return r.json();
   },
 };
+
+// ---- M6: Uncertainty quantification ----------------------------------
+export interface UQResult {
+  method: "ptf_mc" | "posterior_predict" | "glue";
+  param_names: string[];
+  obs_names: string[];
+  ys: number[][];
+  weights: number[] | null;
+  quantiles: Record<string, number[]>;
+  n_samples: number;
+  diagnostics: Record<string, any>;
+}
+
+export interface GLUEPayload {
+  thetas: number[][];
+  ys: number[][];
+  param_names: string[];
+  obs_names: string[];
+  obs_values: number[];
+  obs_sigmas: number[];
+  likelihood_cutoff?: number;
+}
+
+export const uq = {
+  async glue(p: GLUEPayload): Promise<UQResult> {
+    const r = await fetch(`${RESEARCH_BASE}/research/uq/glue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(p),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+};
