@@ -238,6 +238,14 @@ def build_app():
     except ImportError:
         pass     # hydrus_research extra not installed
 
+    # M5: research/inversion/* router
+    try:
+        from .routers.research_inversion import router as inv_router
+        app.include_router(inv_router, prefix="/research/inversion",
+                           tags=["research", "inversion"])
+    except ImportError:
+        pass
+
     return app
 
 
