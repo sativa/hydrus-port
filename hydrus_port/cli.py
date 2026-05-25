@@ -550,11 +550,112 @@ def _cmd_soil_ptf(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_research_sweep(args: argparse.Namespace) -> int:
+    """Execute `hydrus research sweep`."""
+    import numpy as _np
+    from pathlib import Path as _P
+    from hydrus_research.batch import BatchRunner
+    from hydrus_research.batch.sampling import lhs, grid, uniform_random
+    from hydrus_research.parameters import ParameterSpec, ParameterMap
+    from hydrus_research.observations import ObservationSpec
+    from hydrus_research.simulator import make_forward
+    from hydrus_research.simulator.hydrus1d_adapter import Hydrus1DSimulator
+    from hydrus_port.adapters.hydrus1d import load as _load_h1d
+
+    # Parse --param specs: target:lo:hi[:transform]
+    specs: list[ParameterSpec] = []
+    for s in args.param:
+        parts = s.split(":")
+        target, lo, hi = parts[0], float(parts[1]), float(parts[2])
+        transform = parts[3] if len(parts) > 3 else "linear"
+        name = target.rsplit(".", 1)[-1]
+        specs.append(ParameterSpec(name=name, target=target,
+                                   bounds=(lo, hi), transform=transform))
+    pm = ParameterMap(specs)
+
+    # Parse --obs specs (kind@-Ncm,t=T format)
+    obs_specs: list[ObservationSpec] = []
+    for chunk in args.obs.split(",t="):
+        # handle "theta@-30cm,t=1.0" — split once on ",t=" to get loc + time
+        pass
+    # Re-parse correctly: the obs string may be "theta@-30cm,t=1.0"
+    # Multiple obs are separated by semicolons to avoid ambiguity with the
+    # comma inside the single spec. The default has exactly one obs spec.
+    obs_specs = []
+    for chunk in args.obs.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        kind, _, rest = chunk.partition("@")
+        loc_part, _, t_part = rest.partition(",t=")
+        z_cm = float(loc_part.rstrip("cm"))
+        t = float(t_part)
+        obs_specs.append(ObservationSpec(
+            name=f"{kind}_{loc_part}_{t}",
+            kind=kind,
+            location={"z_cm": z_cm},
+            time_day=t,
+        ))
+
+    # Build forward
+    template = _load_h1d(_P(args.scenario_dir)).to_dict()
+    sim = Hydrus1DSimulator()
+    forward = make_forward(sim, pm,
+                           template_scenario=template,
+                           forcing=None, ic=None,
+                           obs_specs=obs_specs)
+
+    # Sample thetas in internal coordinates
+    bounds_internal = pm.bounds_array()
+    if args.sampler == "lhs":
+        thetas = lhs(bounds_internal, n=args.n, seed=args.seed)
+    elif args.sampler == "grid":
+        per_axis = max(1, int(round(args.n ** (1.0 / len(specs)))))
+        thetas = grid(bounds_internal, points_per_axis=[per_axis] * len(specs))
+    else:
+        thetas = uniform_random(bounds_internal, n=args.n, seed=args.seed)
+
+    runner = BatchRunner(forward=forward,
+                         param_names=[s.name for s in specs],
+                         obs_names=[o.name for o in obs_specs],
+                         n_workers=args.workers)
+    result = runner.run(thetas)
+    out = _P(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    result.to_parquet(out)
+    print(f"swept {result.N} samples, {result.n_failed} failed; written to {out}")
+    return 0
+
+
+def _cmd_research_worker(args: argparse.Namespace) -> int:
+    """Execute `hydrus research worker` — boot a PEST++ TCP worker entry point."""
+    from pathlib import Path as _P
+    from hydrus_research.batch.pyemu_worker import run_worker
+
+    host, _, port_s = args.master.partition(":")
+    port = int(port_s)
+
+    def forward(theta):
+        # Real implementation: build ParameterMap + ObservationSpec from
+        # PEST template/instruction files. Out of M3 scope; the user
+        # provides a Python adapter via a future plugin point (M4+).
+        raise NotImplementedError(
+            "worker forward() requires a PEST-template adapter not yet wired up; "
+            "this is the M3 entry point — see DOCS/superpowers/specs/...§4.4 for plan"
+        )
+
+    return run_worker(master_host=host, master_port=port,
+                      forward=forward, param_names=[], obs_names=[],
+                      workdir=_P(args.workdir) if args.workdir else None,
+                      worker_name=args.name)
+
+
 def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
     """`hydrus research <subcmd>` — research-platform CLI surface.
 
     M1 adds: research dndc {list-presets, validate, to-forcing}
     M2 adds: research soil ptf
+    M3 adds: research sweep, research worker
     """
     p_research = sub.add_parser(
         "research",
@@ -605,6 +706,42 @@ def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
                                 "rosetta3_h1", "rosetta3_h2", "rosetta3_h3",
                                 "rosetta3_h4"])
     p_ptf.set_defaults(_cmd=_cmd_soil_ptf)
+
+    # ----- sweep (M3) --------------------------------------------------
+    p_sweep = rsub.add_parser("sweep", help="batch-run forward(θ) over N samples")
+    p_sweep.add_argument("scenario_dir",
+                         help="path to scenario inputs (1D/2D/3D)")
+    p_sweep.add_argument("--param", action="append", required=True,
+                         help="parameter spec: target:lo:hi[:transform] "
+                              "(e.g. materials[0].alpha:0.001:1.0:log). "
+                              "Repeat for multi-D sweeps.")
+    p_sweep.add_argument("--obs", default="theta@-30cm,t=1.0",
+                         help="semicolon-separated obs specs (kind@-Ncm,t=T); "
+                              "default: theta@-30cm,t=1.0")
+    p_sweep.add_argument("--n", type=int, default=32, help="number of samples (default 32)")
+    p_sweep.add_argument("--sampler", default="lhs",
+                         choices=["lhs", "grid", "uniform"],
+                         help="sampling strategy (default: lhs)")
+    p_sweep.add_argument("--workers", type=int, default=1,
+                         help="parallel workers (default: 1)")
+    p_sweep.add_argument("--seed", type=int, default=None,
+                         help="random seed for reproducible sampling")
+    p_sweep.add_argument("--out", required=True,
+                         help="output parquet file path")
+    p_sweep.set_defaults(_cmd=_cmd_research_sweep)
+
+    # ----- worker (M3) -------------------------------------------------
+    p_worker = rsub.add_parser("worker",
+                               help="run as a PEST++ TCP worker for inversion")
+    p_worker.add_argument("--master", required=True,
+                          help="master host:port (e.g. 127.0.0.1:4004)")
+    p_worker.add_argument("--scenario-dir", required=True,
+                          help="scenario template directory the worker forward-evaluates")
+    p_worker.add_argument("--workdir", default=None,
+                          help="working dir for I/O files (default: temp dir)")
+    p_worker.add_argument("--name", default=None,
+                          help="worker name shown in master log")
+    p_worker.set_defaults(_cmd=_cmd_research_worker)
 
 
 def build_parser() -> argparse.ArgumentParser:
