@@ -40,7 +40,7 @@ def fit(forward: Callable[[np.ndarray], np.ndarray] | None,
     if backend in ("lm", "lm_scipy"):
         if forward is None:
             raise ValueError("LM backend requires a `forward` callable")
-        lm_kwargs = {k: v for k, v in kwargs.items() if k in ("x0", "max_nfev")}
+        lm_kwargs = {k: v for k, v in kwargs.items() if k in ("x0", "max_nfev", "diff_step")}
         return fit_lm(forward=forward, param_map=param_map, obs=obs, **lm_kwargs)
     if backend in ("ies", "pyemu_ies"):
         if scenario_dir is None:

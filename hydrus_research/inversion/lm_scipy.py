@@ -14,10 +14,17 @@ def fit_lm(forward: Callable[[np.ndarray], np.ndarray],
            param_map,
            obs,
            x0: np.ndarray | None = None,
-           max_nfev: int = 200) -> InversionResult:
+           max_nfev: int = 200,
+           diff_step: float | None = None) -> InversionResult:
     """LM-fit `forward(theta) → y_sim` to `obs.values` via least_squares.
 
-    Returns InversionResult with best_params + jacobian-derived CIs."""
+    Returns InversionResult with best_params + jacobian-derived CIs.
+
+    `diff_step` controls the finite-difference step size for the jacobian.
+    When the forward simulator outputs rounded values (e.g. HYDRUS-1D text
+    output precision = 4 decimal places), the default scipy step of ~1.5e-8
+    may be below the resolution floor — set diff_step=0.05 (5% in parameter
+    space) to ensure the gradient is detectable."""
     from scipy.optimize import least_squares
 
     if x0 is None:
@@ -40,6 +47,7 @@ def fit_lm(forward: Callable[[np.ndarray], np.ndarray],
         bounds=(bounds[:, 0], bounds[:, 1]),
         method="trf", jac="2-point", x_scale="jac",
         max_nfev=max_nfev,
+        **({"diff_step": diff_step} if diff_step is not None else {}),
     )
     wall = time.time() - t0
 
