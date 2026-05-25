@@ -254,6 +254,14 @@ def build_app():
     except ImportError:
         pass
 
+    # M6: research/uq/* router
+    try:
+        from .routers.research_uq import router as uq_router
+        app.include_router(uq_router, prefix="/research/uq",
+                           tags=["research", "uq"])
+    except ImportError:
+        pass
+
     return app
 
 
