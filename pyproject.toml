@@ -55,6 +55,8 @@ research = [
     "joblib",
     "pydantic>=2.5",
     "PyYAML",
+    "pyarrow>=15",
+    "tqdm>=4.66",
 ]
 research-uq = [
     "pymc>=5",
