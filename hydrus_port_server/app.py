@@ -254,6 +254,14 @@ def build_app():
     except ImportError:
         pass
 
+    # M7: research/surrogate/* router
+    try:
+        from .routers.research_surrogate import router as surrogate_router
+        app.include_router(surrogate_router, prefix="/research/surrogate",
+                           tags=["research", "surrogate"])
+    except ImportError:
+        pass
+
     return app
 
 

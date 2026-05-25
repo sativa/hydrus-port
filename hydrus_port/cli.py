@@ -889,6 +889,27 @@ def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
     p_inv.add_argument("--out", required=True, help="output JSON path")
     p_inv.set_defaults(_cmd=_cmd_research_invert)
 
+    # ----- surrogate (M7) -------------------------------------------
+    p_surr = rsub.add_parser("surrogate", help="train/save surrogate models")
+    ssub = p_surr.add_subparsers(dest="surrogate_cmd", required=True)
+    p_tr = ssub.add_parser("train", help="train a surrogate from a parquet")
+    p_tr.add_argument("batch_parquet")
+    p_tr.add_argument("--type", choices=["gp", "pck"], default="gp")
+    p_tr.add_argument("--out", required=True, help="output joblib path")
+    p_tr.set_defaults(_cmd=_cmd_surrogate_train)  # M7:
+
+
+def _cmd_surrogate_train(args: argparse.Namespace) -> int:  # M7:
+    """Execute `hydrus research surrogate train`."""
+    from pathlib import Path as _P
+    from hydrus_research.batch import BatchResult
+    from hydrus_research.surrogate import train_gp, train_pck
+    br = BatchResult.from_parquet(_P(args.batch_parquet))
+    surr = (train_gp if args.type == "gp" else train_pck)(br)
+    surr.save(_P(args.out))
+    print(f"surrogate ({args.type}) trained on {br.N} samples → {args.out}")
+    return 0
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(

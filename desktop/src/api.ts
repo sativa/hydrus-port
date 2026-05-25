@@ -369,3 +369,28 @@ export const inversion = {
     return r.json();
   },
 };
+
+// ---- M7: Surrogate -------------------------------------------------
+export interface SurrogateTrainRequest {
+  batch_parquet: string;
+  type: "gp" | "pck";
+}
+export interface SurrogateTrainResponse { model_id: string; type: string; }
+
+export const surrogate = {
+  async train(req: SurrogateTrainRequest): Promise<SurrogateTrainResponse> {
+    const r = await fetch(`${RESEARCH_BASE}/research/surrogate/train`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+  async evaluate(modelId: string): Promise<Record<string, number[]>> {
+    const r = await fetch(`${RESEARCH_BASE}/research/surrogate/${modelId}/evaluate`, {
+      method: "POST",
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  },
+};
