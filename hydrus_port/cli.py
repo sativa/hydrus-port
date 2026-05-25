@@ -910,6 +910,36 @@ def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
     p_tr.add_argument("--out", required=True, help="output joblib path")
     p_tr.set_defaults(_cmd=_cmd_surrogate_train)
 
+    p_opt = rsub.add_parser("optimize", help="decision optimization (P2)")
+    osub = p_opt.add_subparsers(dest="opt_cmd", required=True)
+    p_nsga = osub.add_parser("nsga", help="NSGA-II multi-objective")
+    p_nsga.add_argument("--bounds", required=True,
+                        help="comma-separated lo:hi pairs (one per param)")
+    p_nsga.add_argument("--n-gen", type=int, default=20)
+    p_nsga.add_argument("--pop", type=int, default=50)
+    p_nsga.add_argument("--out", required=True)
+    p_nsga.set_defaults(_cmd=_cmd_optimize_nsga)
+
+
+def _cmd_optimize_nsga(args: argparse.Namespace) -> int:
+    import json as _json
+    from pathlib import Path as _P
+    import numpy as _np
+    from hydrus_research.optimization import nsga_optimize
+    bnds = _np.array([list(map(float, b.split(":")))
+                      for b in args.bounds.split(",")])
+    # Toy multi-obj for CLI smoke; real schedule optimization wires
+    # forward to a Hydrus1DSimulator → WUE + N-leaching computation.
+    def fwd(theta): return _np.array([theta[0] ** 2 + theta[1] ** 2,
+                                       (theta[0] - 1) ** 2 + (theta[1] - 1) ** 2])
+    r = nsga_optimize(forward=fwd, bounds=bnds,
+                      param_names=[f"x{i}" for i in range(bnds.shape[0])],
+                      objective_names=["f1", "f2"],
+                      pop_size=args.pop, n_gen=args.n_gen)
+    _P(args.out).write_text(_json.dumps(r.model_dump(), indent=2))
+    print(f"NSGA-II Pareto front: {len(r.pareto_thetas)} points → {args.out}")
+    return 0
+
 
 def _cmd_uq_glue(args: argparse.Namespace) -> int:
     import json as _json
