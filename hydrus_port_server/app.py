@@ -230,6 +230,14 @@ def build_app():
     except ImportError:
         pass     # hydrus_research extra not installed
 
+    # M3.7: research/batch/* router (only if hydrus_research is installed)
+    try:
+        from .routers.research_batch import router as batch_router
+        app.include_router(batch_router, prefix="/research/batch",
+                           tags=["research", "batch"])
+    except ImportError:
+        pass     # hydrus_research extra not installed
+
     return app
 
 
