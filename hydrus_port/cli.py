@@ -550,6 +550,47 @@ def _cmd_soil_ptf(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_research_invert(args: argparse.Namespace) -> int:
+    """Execute `hydrus research invert`."""
+    import json as _json
+    from pathlib import Path as _P
+    from hydrus_research.parameters import ParameterSpec, ParameterMap
+    from hydrus_research.observations import ObservationSet
+    from hydrus_research.simulator import make_forward
+    from hydrus_research.simulator.hydrus1d_adapter import Hydrus1DSimulator
+    from hydrus_research.inversion import fit
+    from hydrus_port.adapters.hydrus1d import load as _load_h1d
+
+    specs = []
+    for s in args.param:
+        parts = s.split(":")
+        target, lo, hi = parts[0], float(parts[1]), float(parts[2])
+        transform = parts[3] if len(parts) > 3 else "linear"
+        name = target.rsplit(".", 1)[-1]
+        specs.append(ParameterSpec(name=name, target=target,
+                                   bounds=(lo, hi), transform=transform))
+    pm = ParameterMap(specs)
+    obs = ObservationSet.from_csv(_P(args.obs))
+
+    template = _load_h1d(_P(args.scenario_dir)).to_dict()
+    sim = Hydrus1DSimulator()
+    forward = make_forward(sim, pm, template_scenario=template,
+                           forcing=None, ic=None, obs_specs=obs.specs)
+
+    result = fit(forward=forward, param_map=pm, obs=obs,
+                 scenario_dir=args.scenario_dir,
+                 backend=args.backend,
+                 simulator_dimension=1,
+                 max_nfev=args.max_nfev,
+                 n_real=args.n_real, n_iter=args.n_iter)
+    out = _P(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_json.dumps(result.model_dump(), indent=2))
+    print(f"inversion ({result.backend}): best_params = {result.best_params}")
+    print(f"  written to {out}")
+    return 0
+
+
 def _cmd_research_sweep(args: argparse.Namespace) -> int:
     """Execute `hydrus research sweep`."""
     import numpy as _np
@@ -742,6 +783,20 @@ def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
     p_worker.add_argument("--name", default=None,
                           help="worker name shown in master log")
     p_worker.set_defaults(_cmd=_cmd_research_worker)
+
+    # ----- invert (M5) -----------------------------------------------
+    p_inv = rsub.add_parser("invert", help="parameter inversion / calibration")
+    p_inv.add_argument("scenario_dir")
+    p_inv.add_argument("--param", action="append", required=True,
+                       help="target:lo:hi[:transform]; repeat for multi-D")
+    p_inv.add_argument("--obs", required=True, help="observations CSV path")
+    p_inv.add_argument("--backend", default="auto",
+                       choices=["auto", "lm", "ies", "glm", "nuts"])
+    p_inv.add_argument("--max-nfev", type=int, default=200)
+    p_inv.add_argument("--n-real", type=int, default=200)
+    p_inv.add_argument("--n-iter", type=int, default=4)
+    p_inv.add_argument("--out", required=True, help="output JSON path")
+    p_inv.set_defaults(_cmd=_cmd_research_invert)
 
 
 def build_parser() -> argparse.ArgumentParser:
