@@ -47,3 +47,26 @@ def test_fit_unknown_backend_raises():
     with pytest.raises(ValueError):
         fit(forward=lambda t: np.array([t[0]]),
             param_map=pm, obs=obs, scenario_dir=None, backend="quantum")
+
+import pytest as _pytest
+import numpy as _np
+
+_pymc = _pytest.importorskip("pymc")
+
+
+def test_fit_dispatches_to_pymc_when_backend_nuts():
+    from hydrus_research.inversion import fit, InversionResult
+    from hydrus_research.parameters import ParameterSpec, ParameterMap
+    from hydrus_research.observations import ObservationSpec, ObservationSet
+    pm_map = ParameterMap([ParameterSpec(name="a", target="a", bounds=(0.1, 5.0))])
+    obs = ObservationSet(
+        specs=[ObservationSpec(name="o", kind="theta",
+                               location={"z_cm": 0.0}, time_day=0.0)],
+        values=_np.array([4.0]), sigmas=_np.array([0.5]),
+    )
+    r = fit(forward=lambda t: _np.array([t[0] ** 2]),
+            param_map=pm_map, obs=obs,
+            scenario_dir=None, backend="nuts",
+            draws=100, tune=100, chains=1)
+    assert isinstance(r, InversionResult)
+    assert r.backend == "pymc_nuts"
