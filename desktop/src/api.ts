@@ -329,3 +329,43 @@ export const sensitivity = {
     return r.json();
   },
 };
+
+// ---- M5: Inversion --------------------------------------------------
+export interface InversionRequest {
+  scenario_dir: string;
+  params: BatchParamSpec[];
+  obs_inline: {
+    specs: BatchObsSpec[];
+    values: number[];
+    sigmas: number[];
+  };
+  max_nfev?: number;
+  n_real?: number;
+  n_iter?: number;
+}
+
+export interface InversionResult {
+  backend: string;
+  best_params: Record<string, number>;
+  parameter_ci_lo: Record<string, number>;
+  parameter_ci_hi: Record<string, number>;
+  posterior_ensemble: number[][] | null;
+  posterior_param_names: string[];
+  objective_history: number[];
+  n_forward_calls: number;
+  wall_s: number;
+  diagnostics: Record<string, any>;
+}
+
+export const inversion = {
+  async run(backend: "auto" | "lm" | "ies" | "glm" | "nuts",
+            req: InversionRequest): Promise<InversionResult> {
+    const r = await fetch(`${RESEARCH_BASE}/research/inversion/${backend}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+};

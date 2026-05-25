@@ -238,13 +238,21 @@ def build_app():
     except ImportError:
         pass     # hydrus_research extra not installed
 
-    # M4: research/sensitivity/* router (only if hydrus_research is installed)
+    # M4: research/sensitivity/* router
     try:
-        from .routers.research_sensitivity import router as sens_router  # M4:
-        app.include_router(sens_router, prefix="/research/sensitivity",  # M4:
-                           tags=["research", "sensitivity"])              # M4:
+        from .routers.research_sensitivity import router as sens_router
+        app.include_router(sens_router, prefix="/research/sensitivity",
+                           tags=["research", "sensitivity"])
     except ImportError:
-        pass     # M4: hydrus_research[sensitivity] extra not installed
+        pass
+
+    # M5: research/inversion/* router
+    try:
+        from .routers.research_inversion import router as inv_router
+        app.include_router(inv_router, prefix="/research/inversion",
+                           tags=["research", "inversion"])
+    except ImportError:
+        pass
 
     return app
 
