@@ -12,6 +12,7 @@ import ScenarioEditor from "./components/ScenarioEditor.vue";
 import DNDCForms from "./pages/research/DNDCForms.vue";
 import SoilLibrary from "./pages/research/SoilLibrary.vue";
 import BatchSweep from "./pages/research/BatchSweep.vue";
+import InversionStudio from "./pages/research/InversionStudio.vue";  // M5:
 import { api, type JobMeta, type PythonInfo } from "./api";
 import { theme, toggleTheme } from "./theme";
 
@@ -28,7 +29,7 @@ const isTwoDimensional = computed(() => {
   return k === "swms2d" || k === "2d";
 });
 
-const rightTab = ref<"3d" | "editor" | "dndc" | "soil-library" | "batch">("editor");
+const rightTab = ref<"3d" | "editor" | "dndc" | "soil-library" | "batch" | "inversion">("editor");  // M5: added "inversion"
 const editorPath = ref<string | null>(null);
 function onScenarioSelected(path: string, kind: string) {
   // Editor handles 1d / 2d / 3d through the canonical Scenario schema:
@@ -162,12 +163,17 @@ function onJobUpdated(j: JobMeta) {
                   @click="rightTab = 'soil-library'">Soil Library</button>
           <button class="tab" :class="{active: rightTab === 'batch'}"
                   @click="rightTab = 'batch'">Batch Sweep</button>
+          <!-- M5: Inversion tab -->
+          <button class="tab" :class="{active: rightTab === 'inversion'}"
+                  @click="rightTab = 'inversion'">Inversion</button>
         </div>
         <ScenarioEditor v-if="rightTab === 'editor'"
                         :scenario-path="editorPath" />
         <DNDCForms v-else-if="rightTab === 'dndc'" />
         <SoilLibrary v-else-if="rightTab === 'soil-library'" />
         <BatchSweep v-else-if="rightTab === 'batch'" />
+        <!-- M5: Inversion Studio -->
+        <InversionStudio v-else-if="rightTab === 'inversion'" />
         <MeshViewer3D v-else :job="job" />
       </section>
     </main>
