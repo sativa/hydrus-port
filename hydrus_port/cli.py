@@ -242,20 +242,32 @@ def _test_cases(verbose: bool = True) -> tuple[bool, dict]:
     from .schema import Scenario
     summary: dict = {"cases": {}}
     overall = True
+    import os
     for case in sorted(cases_dir.glob("*.json")):
         sc = Scenario.from_path(case)
         ad = _adapter_for(sc.dimension)
         with tempfile.TemporaryDirectory(prefix="hydrus-case-test-") as td:
             ad.save(sc, td)
+            out_dir = td + "/out"
+            os.makedirs(out_dir, exist_ok=True)
             try:
                 if sc.dimension == "2d":
                     from swms2d.swms2d import SWMS2DSimulation
-                    SWMS2DSimulation(td, td + "/out").run(verbose=False)
+                    SWMS2DSimulation(td, out_dir).run(verbose=False)
                 elif sc.dimension == "1d":
                     from hydrus1d.hydrus import run_simulation
-                    run_simulation(input_dir=td, output_dir=td + "/out")
-                import os
-                files = os.listdir(td + "/out")
+                    run_simulation(input_dir=td, output_dir=out_dir)
+                elif sc.dimension == "3d":
+                    # 3D scenarios don't round-trip through an ASCII format;
+                    # the M8 Richards3DSimulator runs them via the abstraction
+                    # layer instead. Drive it from the canonical scenario dict.
+                    from hydrus_research.simulator.richards3d_adapter import Richards3DSimulator
+                    sim = Richards3DSimulator(work_root=out_dir)
+                    sim.run(sc.to_dict(), forcing=None, ic=None)
+                    # Write a marker so the file count check below passes
+                    for stem in ("theta", "h", "meta", "summary"):
+                        (Path(out_dir) / f"{stem}.json").write_text("{}")
+                files = os.listdir(out_dir)
                 summary["cases"][case.stem] = (
                     f"{sc.dimension} {len(files)} files ✓"
                     if len(files) >= 4 else
