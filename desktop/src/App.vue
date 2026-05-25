@@ -15,6 +15,7 @@ import BatchSweep from "./pages/research/BatchSweep.vue";
 import SensitivityReport from "./pages/research/SensitivityReport.vue";
 import InversionStudio from "./pages/research/InversionStudio.vue";
 import UQExplorer from "./pages/research/UQExplorer.vue";
+import SurrogateBench from "./pages/research/SurrogateBench.vue";
 import { api, type JobMeta, type PythonInfo } from "./api";
 import { theme, toggleTheme } from "./theme";
 
@@ -31,7 +32,7 @@ const isTwoDimensional = computed(() => {
   return k === "swms2d" || k === "2d";
 });
 
-const rightTab = ref<"3d" | "editor" | "dndc" | "soil-library" | "batch" | "sensitivity" | "inversion" | "uq">("editor");
+const rightTab = ref<"3d" | "editor" | "dndc" | "soil-library" | "batch" | "sensitivity" | "inversion" | "uq" | "surrogate">("editor");
 const editorPath = ref<string | null>(null);
 function onScenarioSelected(path: string, kind: string) {
   // Editor handles 1d / 2d / 3d through the canonical Scenario schema:
@@ -171,6 +172,8 @@ function onJobUpdated(j: JobMeta) {
                   @click="rightTab = 'inversion'">Inversion</button>
           <button class="tab" :class="{active: rightTab === 'uq'}"
                   @click="rightTab = 'uq'">UQ</button>
+          <button class="tab" :class="{active: rightTab === 'surrogate'}"
+                  @click="rightTab = 'surrogate'">Surrogate</button>
         </div>
         <ScenarioEditor v-if="rightTab === 'editor'"
                         :scenario-path="editorPath" />
@@ -180,6 +183,7 @@ function onJobUpdated(j: JobMeta) {
         <SensitivityReport v-else-if="rightTab === 'sensitivity'" />
         <InversionStudio v-else-if="rightTab === 'inversion'" />
         <UQExplorer v-else-if="rightTab === 'uq'" />
+        <SurrogateBench v-else-if="rightTab === 'surrogate'" />
         <MeshViewer3D v-else :job="job" />
       </section>
     </main>
