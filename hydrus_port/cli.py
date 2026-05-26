@@ -790,8 +790,7 @@ def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
         "research",
         help="research-platform tools (DNDC seam, PTF, ...)",
     )
-    rsub = p_research.add_subparsers(dest="research_cmd", required=True,
-                                     metavar="{dndc,soil}")
+    rsub = p_research.add_subparsers(dest="research_cmd", required=True)
 
     # ----- dndc (M1) ---------------------------------------------------
     p_dndc = rsub.add_parser("dndc", help="DNDC seam — validate / inspect")
@@ -901,6 +900,23 @@ def _build_research_subparser(sub: "argparse._SubParsersAction") -> None:
     p_inv.add_argument("--out", required=True, help="output JSON path")
     p_inv.set_defaults(_cmd=_cmd_research_invert)
 
+    # ----- agronomy (M-Agronomy) ----------------------------------------
+    p_agro = rsub.add_parser("agronomy", help="agronomy decision workflow")
+    asub = p_agro.add_subparsers(dest="agronomy_cmd", required=True)
+
+    p_agro_run = asub.add_parser("run", help="run a single decision scenario")
+    p_agro_run.add_argument("--crop",    required=True)
+    p_agro_run.add_argument("--soil",    required=True)
+    p_agro_run.add_argument("--weather", required=True)
+    p_agro_run.add_argument("--horizon-days", type=int, required=True)
+    p_agro_run.add_argument("--irrig",   required=True,
+                            help="CSV: date,depth_mm")
+    p_agro_run.add_argument("--fert",    required=True,
+                            help="CSV: date,kg_n_ha[,conc_mg_l]")
+    p_agro_run.add_argument("--out",     required=True)
+    p_agro_run.add_argument("--start-year", type=int, default=2026)
+    p_agro_run.set_defaults(_cmd=_cmd_research_agronomy_run)
+
     # ----- uq (M6) ---------------------------------------------------
     p_uq = rsub.add_parser("uq", help="uncertainty quantification")
     usub = p_uq.add_subparsers(dest="uq_cmd", required=True)
@@ -966,6 +982,59 @@ def _cmd_uq_glue(args: argparse.Namespace) -> int:
                     likelihood_cutoff=args.cutoff)
     _P(args.out).write_text(_json.dumps(r.model_dump(), indent=2))
     print(f"GLUE kept {r.n_samples} of {r.diagnostics['n_total']} → {args.out}")
+    return 0
+
+
+def _cmd_research_agronomy_run(args: argparse.Namespace) -> int:
+    """Execute `hydrus research agronomy run` — one decision-scenario run."""
+    import csv as _csv
+    import json as _json
+    from datetime import date as _date
+    from pathlib import Path as _Path
+    from hydrus_research.agronomy import (
+        AgronomyRequest, IrrigEvent, FertEvent, run_agronomy,
+    )
+
+    def _read_irrig(p: _Path) -> list:
+        events: list = []
+        with open(p) as f:
+            for row in _csv.DictReader(f):
+                if not row.get("date"):
+                    continue
+                events.append(IrrigEvent(
+                    date=_date.fromisoformat(row["date"]),
+                    depth_mm=float(row["depth_mm"]),
+                ))
+        return events
+
+    def _read_fert(p: _Path) -> list:
+        events: list = []
+        with open(p) as f:
+            for row in _csv.DictReader(f):
+                if not row.get("date"):
+                    continue
+                conc = row.get("conc_mg_l")
+                events.append(FertEvent(
+                    date=_date.fromisoformat(row["date"]),
+                    kg_n_ha=float(row["kg_n_ha"]),
+                    conc_mg_l=float(conc) if conc else None,
+                ))
+        return events
+
+    req = AgronomyRequest(
+        crop_id=args.crop,
+        soil_id=args.soil,
+        weather_id=args.weather,
+        horizon_days=args.horizon_days,
+        start_year=args.start_year,
+        irrigation=_read_irrig(_Path(args.irrig)),
+        fertilizer=_read_fert(_Path(args.fert)),
+    )
+    out_dir = _Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = run_agronomy(req, work_dir=out_dir / "_work")
+    (out_dir / "result.json").write_text(result.model_dump_json(indent=2))
+    print(f"wrote {out_dir / 'result.json'}")
     return 0
 
 
