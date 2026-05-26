@@ -83,6 +83,34 @@ def test_canonical_scenario_writes_valid_hydrus1d_input(tmp_path):
     assert min(z_values) <= -50.0, f"deepest z should be deeply negative, got min={min(z_values)}"
 
 
+def test_result_parser_returns_ascending_z_and_finite_theta(tmp_path):
+    """Synthesize a NOD_INF.OUT-like file and check the parser."""
+    from hydrus_research.agronomy.result_parser import parse_nod_inf
+
+    p = tmp_path / "NOD_INF.OUT"
+    # 2 time blocks, 3 depths (HYDRUS-1D descending z; surface=0, deep negative)
+    p.write_text(
+        "Time:    0.000\n"
+        "Node    z       h       theta\n"
+        "1       0.000  -100.0   0.30\n"
+        "2     -50.000  -150.0   0.25\n"
+        "3    -100.000  -200.0   0.20\n"
+        "Time:    1.000\n"
+        "Node    z       h       theta\n"
+        "1       0.000   -90.0   0.32\n"
+        "2     -50.000  -140.0   0.27\n"
+        "3    -100.000  -190.0   0.22\n"
+    )
+    z, t, theta = parse_nod_inf(p)
+    # ascending z (0,50,100)
+    assert z[0] < z[1] < z[2]
+    assert list(z) == [0.0, 50.0, 100.0]
+    assert len(t) == 2
+    assert theta.shape == (2, 3)
+    # theta[0,0] was 0.30 at surface
+    assert abs(theta[0, 0] - 0.30) < 1e-6
+
+
 def test_to_dict_returns_deep_copy_so_nested_mutation_does_not_leak():
     from hydrus_research.agronomy.scenario_builder import build_scenario
     from hydrus_research.library.crops import get_crop
