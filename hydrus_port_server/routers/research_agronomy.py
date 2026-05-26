@@ -5,6 +5,7 @@ hydrus1d / desktop imports, and hydrus_research must not import from
 hydrus_port_server (no reverse dep).
 """
 from __future__ import annotations
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -51,3 +52,5 @@ def run(req: AgronomyRequest):
         return run_agronomy(req, work_dir=work)
     except KeyError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
