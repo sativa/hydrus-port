@@ -428,3 +428,69 @@ export const surrogate = {
     return r.json();
   },
 };
+
+// =========================================================================
+// Agronomy decision workflow (workflow GUI; M-Agronomy)
+// =========================================================================
+
+export type Crop = {
+  id: string; name_zh: string; name_en: string;
+  feddes: Record<string, number>;
+  root:   { max_depth_cm: number; z50_cm: number; z95_cm: number };
+  season: { sow_doy: number; harvest_doy: number };
+  kc_curve: { doy: number; kc: number }[];
+};
+
+export type SoilLayer = {
+  depth_cm: number;
+  vg: { theta_r:number; theta_s:number; alpha:number; n:number; Ks:number; L:number };
+};
+
+export type Soil = {
+  id: string; name_zh: string; name_en: string;
+  layers: SoilLayer[];
+};
+
+export type WeatherMeta = { id: string; name_zh: string };
+
+export type AgronomyResult = {
+  z_cm: number[]; t_days: number[];
+  theta_zt: number[][]; n_zt: number[][];
+  water_balance: { rain_mm: number; irrig_mm: number; et_mm: number;
+                   percolation_mm: number; storage_change_mm: number };
+  n_budget: { applied_kg_ha: number; uptake_kg_ha: number;
+              leached_kg_ha: number; residual_kg_ha: number };
+  events: { t_day: number; amount: number; label: "irrig" | "fert" }[];
+};
+
+export const agronomy = {
+  async listCrops(): Promise<Crop[]> {
+    const r = await fetch(`${RESEARCH_BASE}/research/agronomy/lib/crops`);
+    if (!r.ok) throw new Error(await r.text());
+    return (await r.json()).crops;
+  },
+  async listSoils(): Promise<Soil[]> {
+    const r = await fetch(`${RESEARCH_BASE}/research/agronomy/lib/soils`);
+    if (!r.ok) throw new Error(await r.text());
+    return (await r.json()).soils;
+  },
+  async listWeather(): Promise<WeatherMeta[]> {
+    const r = await fetch(`${RESEARCH_BASE}/research/agronomy/lib/weather`);
+    if (!r.ok) throw new Error(await r.text());
+    return (await r.json()).weather;
+  },
+  async run(payload: {
+    crop_id: string; soil_id: string; weather_id: string;
+    horizon_days: number; start_year: number;
+    irrigation: { date: string; depth_mm: number }[];
+    fertilizer: { date: string; kg_n_ha: number; conc_mg_l?: number | null }[];
+  }): Promise<AgronomyResult> {
+    const r = await fetch(`${RESEARCH_BASE}/research/agronomy/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return await r.json();
+  },
+};
