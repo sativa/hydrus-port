@@ -322,10 +322,15 @@ def _write_selector(scenario: Scenario, path: Path) -> None:
     ]))
 
     # Conditional rTop / rBot / rRoot block (parser at hydrus1d/input.py L307)
+    # NOTE: defaults must match those used when writing KodTop/KodBot above
+    # (line ~311/319: KodTop default=1, KodBot default=-1).  Using different
+    # defaults here caused a writer/reader mismatch: KodBot=-1 was written but
+    # need_rates was False, so rTop/rBot/rRoot were omitted and the reader
+    # crashed expecting 3 tokens.
     top_inf = legacy.get("h1d_TopInF", False)
     bot_inf = legacy.get("h1d_BotInF", False)
-    kod_top = legacy.get("h1d_KodTop", 0)
-    kod_bot = legacy.get("h1d_KodBot", 0)
+    kod_top = legacy.get("h1d_KodTop", 1)
+    kod_bot = legacy.get("h1d_KodBot", -1)
     q_gwlf = legacy.get("h1d_qGWLF", False)
     q_drain = legacy.get("h1d_qDrain", False)
     need_rates = ((not top_inf and kod_top == -1)
@@ -377,8 +382,10 @@ def _write_selector(scenario: Scenario, path: Path) -> None:
 
     # Emit raw optional blocks (D/E/F/G/H) preserved from the source
     # file. These cover RootIn (lRoot), TempIn (lTemp), ChemIn (lChem),
-    # SinkIn (SinkF), and DualPorIn — we don't model them in the
-    # canonical schema yet but pass-through keeps scenarios runnable.
+    # SinkIn (SinkF), and DualPorIn.
+    # For scenarios built from scratch with root_uptake=True (lRoot=t,
+    # SinkF=t), synthesise Block D and Block G from scenario.root_uptake
+    # when no raw pass-through block exists.
     raw_blocks = legacy.get("h1d_raw_blocks") or {}
     emit_d = cfg.root_uptake or legacy.get("h1d_lRoot", False)
     emit_e = cfg.heat_transport
@@ -387,8 +394,45 @@ def _write_selector(scenario: Scenario, path: Path) -> None:
     for tag, should_emit in [("BLOCK D", emit_d), ("BLOCK E", emit_e),
                               ("BLOCK F", emit_f), ("BLOCK G", emit_g),
                               ("BLOCK H", True)]:
-        if should_emit and tag in raw_blocks:
+        if not should_emit:
+            continue
+        if tag in raw_blocks:
             L.append(raw_blocks[tag])
+        elif tag == "BLOCK D" and s.root_uptake is not None:
+            # Synthesise RootIn block (Block D, v4 format).
+            # iRootIn=2 → logistic growth model with explicit tRMed/xRMed.
+            # Pull root-depth params from agronomy legacy extras when available.
+            agro = legacy.get("agronomy", {})
+            t_harv = float(t.t_max)
+            t_min = float(t.t_init)
+            t_med = 0.5 * (t_min + t_harv)
+            x_max = float(agro.get("root_z95_cm", agro.get("root_z50_cm", 60.0)) or 60.0)
+            x_min = max(1.0, x_max * 0.05)    # 5% of max depth at sowing
+            x_med = float(agro.get("root_z50_cm", x_max * 0.5) or x_max * 0.5)
+            x_med = max(x_min + 0.1, min(x_med, x_max - 0.1))   # keep in bounds
+            L.append("*** BLOCK D: ROOT GROWTH INFORMATION ***************************")
+            L.append("iRootIn")
+            L.append("2")
+            L.append("iRFak  tRMin  tRMed  tRHarv  xRMin  xRMed  xRMax  tRPeriod")
+            L.append(f"2  {_fmt(t_min)}  {_fmt(t_med)}  {_fmt(t_harv)}"
+                     f"  {_fmt(x_min)}  {_fmt(x_med)}  {_fmt(x_max)}  1.000e+30")
+        elif tag == "BLOCK G" and s.root_uptake is not None:
+            # Synthesise SinkIn block (Block G, v4 format).
+            # iMoSink=0 → Feddes model (pressure-head based).
+            ru = s.root_uptake
+            n_mat = len(mat)
+            # POptm: optional Feddes optimal-pressure per material.
+            # Use scalar 0.0 per material if not specified.
+            p_optm_vals = list(ru.p_optm) if ru.p_optm else [0.0] * n_mat
+            p_optm_vals = (p_optm_vals + [0.0] * n_mat)[:n_mat]  # pad / truncate
+            L.append("*** BLOCK G: ROOT WATER UPTAKE INFORMATION **********************")
+            L.append("iMoSink  cRootMax(1..NS)  OmegaC")
+            L.append(f"0  0  1")
+            L.append("P0  P2H  P2L  P3  r2H  r2L")
+            L.append(f"{_fmt(ru.p0)}  {_fmt(ru.p2H)}  {_fmt(ru.p2L)}"
+                     f"  {_fmt(ru.p3)}  {_fmt(ru.r2H)}  {_fmt(ru.r2L)}")
+            L.append("POptm(1..NMat)")
+            L.append("  ".join(_fmt(v) for v in p_optm_vals))
 
     L.append("*** END OF INPUT FILE 'SELECTOR.IN' ***")
     path.write_text("\n".join(L) + "\n")
