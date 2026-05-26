@@ -128,3 +128,71 @@ def test_to_dict_returns_deep_copy_so_nested_mutation_does_not_leak():
     d2 = sc.to_dict()
     assert d2["sink"]["feddes"]["P3"] == -8000, \
         "to_dict() must return a deep copy"
+
+
+def test_parse_nod_inf_skips_empty_time_blocks(tmp_path):
+    """Empty Time block (no data rows) used to crash with IndexError."""
+    from hydrus_research.agronomy.result_parser import parse_nod_inf
+    p = tmp_path / "NOD_INF.OUT"
+    p.write_text(
+        "Time:    0.000\n"
+        "Node    z       h       theta\n"
+        "1       0.000  -100.0   0.30\n"
+        "2     -50.000  -150.0   0.25\n"
+        "Time:    0.500\n"
+        "Node    z       h       theta\n"
+        "Time:    1.000\n"
+        "Node    z       h       theta\n"
+        "1       0.000   -90.0   0.32\n"
+        "2     -50.000  -140.0   0.27\n"
+    )
+    z, t, theta = parse_nod_inf(p)
+    # Empty block silently skipped; 2 valid blocks remain.
+    assert len(t) == 2
+    assert theta.shape == (2, 2)
+
+
+def test_parse_balance_real_format_extracts_storage_and_percolation(tmp_path):
+    from hydrus_research.agronomy.result_parser import parse_balance
+    p = tmp_path / "BALANCE.OUT"
+    p.write_text(
+        "----------------------------------------------------------\n"
+        " Time       [T]        0.0000\n"
+        "----------------------------------------------------------\n"
+        " W-volume [L]        0.20000E+02  0.20000E+02\n"
+        " Top Flux [L/T]      0.10000E+01\n"
+        " Bot Flux [L/T]     -0.50000E+00\n"
+        "----------------------------------------------------------\n"
+        "\n"
+        "----------------------------------------------------------\n"
+        " Time       [T]        1.0000\n"
+        "----------------------------------------------------------\n"
+        " W-volume [L]        0.21500E+02  0.21500E+02\n"
+        " Top Flux [L/T]      0.10000E+01\n"
+        " Bot Flux [L/T]     -0.50000E+00\n"
+        "----------------------------------------------------------\n"
+    )
+    b = parse_balance(p)
+    # storage change: (21.5 - 20.0) cm × 10 = 15 mm
+    assert abs(b["storage_change_mm"] - 15.0) < 1e-6
+    # rain (positive Top Flux): 1 cm/day × 1 day = 1 cm = 10 mm
+    assert abs(b["rain_mm"] - 10.0) < 1e-6
+    # percolation (|negative Bot Flux|): 0.5 cm/day × 1 day = 0.5 cm = 5 mm
+    assert abs(b["percolation_mm"] - 5.0) < 1e-6
+    # no ET in this synthetic (Top Flux always positive)
+    assert b["et_mm"] == 0.0
+
+
+def test_parse_balance_on_real_fixture():
+    """Smoke against a real BALANCE.OUT from the in-repo fixtures."""
+    from hydrus_research.agronomy.result_parser import parse_balance
+    from pathlib import Path
+    p = Path("tests/fixtures/soil_sand_drain/reference_out/BALANCE.OUT")
+    if not p.exists():
+        import pytest
+        pytest.skip("fixture not present")
+    b = parse_balance(p)
+    # On this drainage scenario, water leaves the profile (storage_change < 0)
+    # and bottom flux drains (percolation > 0).
+    assert b["storage_change_mm"] < 0
+    assert b["percolation_mm"] > 0
