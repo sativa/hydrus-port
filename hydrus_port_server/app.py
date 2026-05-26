@@ -270,6 +270,14 @@ def build_app():
     except ImportError:
         pass
 
+    # Agronomy decision router (workflow GUI)
+    try:
+        from .routers.research_agronomy import router as agronomy_router
+        app.include_router(agronomy_router, prefix="/research/agronomy",
+                           tags=["research", "agronomy"])
+    except ImportError:
+        pass
+
     return app
 
 
