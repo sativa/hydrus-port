@@ -46,13 +46,17 @@ class Crop(BaseModel):
 
 
 @lru_cache(maxsize=1)
-def load_crops() -> list[Crop]:
+def _load_crops_cached() -> tuple[Crop, ...]:
     raw = json.loads(_DATA.read_text(encoding="utf-8"))
-    return [Crop.model_validate(c) for c in raw["crops"]]
+    return tuple(Crop.model_validate(c) for c in raw["crops"])
+
+
+def load_crops() -> list[Crop]:
+    return list(_load_crops_cached())
 
 
 def get_crop(crop_id: str) -> Crop:
-    for c in load_crops():
+    for c in _load_crops_cached():
         if c.id == crop_id:
             return c
     raise KeyError(f"unknown crop id: {crop_id}")

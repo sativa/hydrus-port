@@ -31,13 +31,17 @@ class Soil(BaseModel):
 
 
 @lru_cache(maxsize=1)
-def load_soils() -> list[Soil]:
+def _load_soils_cached() -> tuple[Soil, ...]:
     raw = json.loads(_DATA.read_text(encoding="utf-8"))
-    return [Soil.model_validate(s) for s in raw["soils"]]
+    return tuple(Soil.model_validate(s) for s in raw["soils"])
+
+
+def load_soils() -> list[Soil]:
+    return list(_load_soils_cached())
 
 
 def get_soil(soil_id: str) -> Soil:
-    for s in load_soils():
+    for s in _load_soils_cached():
         if s.id == soil_id:
             return s
     raise KeyError(f"unknown soil id: {soil_id}")

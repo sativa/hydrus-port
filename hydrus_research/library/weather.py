@@ -26,8 +26,12 @@ def load_weather_meta() -> list[dict]:
 
 
 @lru_cache(maxsize=8)
-def load_weather_series(weather_id: str) -> dict[str, list[float]]:
+def _load_weather_series_cached(
+    weather_id: str,
+) -> tuple[tuple[int, ...], tuple[float, ...], tuple[float, ...]]:
     p = _DATA_DIR / f"{weather_id}.csv"
+    if p.resolve().parent != _DATA_DIR.resolve():
+        raise KeyError(f"unknown weather id: {weather_id}")
     if not p.exists():
         raise KeyError(f"unknown weather id: {weather_id}")
     doy, P, PET = [], [], []
@@ -37,4 +41,9 @@ def load_weather_series(weather_id: str) -> dict[str, list[float]]:
             doy.append(int(row["doy"]))
             P.append(float(row["P_mm"]))
             PET.append(float(row["PET_mm"]))
-    return {"doy": doy, "P_mm": P, "PET_mm": PET}
+    return tuple(doy), tuple(P), tuple(PET)
+
+
+def load_weather_series(weather_id: str) -> dict[str, list[float]]:
+    doy, P, PET = _load_weather_series_cached(weather_id)
+    return {"doy": list(doy), "P_mm": list(P), "PET_mm": list(PET)}
