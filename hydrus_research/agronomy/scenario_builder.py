@@ -25,6 +25,7 @@ in d["sink"]["feddes"] so Task-5 can round-trip them back into the crop model
 without casing conversion.
 """
 from __future__ import annotations
+import copy
 from datetime import date, timedelta
 from dataclasses import dataclass, field as dc_field
 from typing import Any
@@ -73,7 +74,7 @@ class AgronomyScenario:
 
     def to_dict(self) -> dict:
         """Return the agronomy-shaped dict (dimension / sim / profile / sink)."""
-        return dict(self._agro_dict)  # shallow copy keeps the caller safe
+        return copy.deepcopy(self._agro_dict)
 
 
 # ---------------------------------------------------------------- private helpers
@@ -149,7 +150,8 @@ def _build_geometry1d(soil: Soil) -> Geometry1D:
 
     for i in range(n_nodes):
         depth_from_surface = i * dz
-        z_vals.append(depth_from_surface)   # positive downward
+        # z is negative-downward (surface=0, bottom=-total_depth) per HYDRUS-1D Profile.dat convention
+        z_vals.append(-depth_from_surface)
 
         # Determine which layer this node belongs to (1-based)
         mat = 1
@@ -161,19 +163,15 @@ def _build_geometry1d(soil: Soil) -> Geometry1D:
         layer_nums.append(mat)
         initial_h.append(-100.0)    # pressure head initial condition (cm, unsaturated)
 
-    # Convert depth-from-surface to HYDRUS-1D z convention: surface at top
-    # Geometry1D.z stores positions in cm, descending (top of profile = 0,
-    # bottom = total_depth).  We store raw positive depths; the hydrus1d
-    # adapter translates to absolute z values.
     return Geometry1D(
         z=z_vals,
         initial_h=initial_h,
         mat_num=mat_nums,
         layer=layer_nums,
-        beta=[],    # root distribution handled by FeddesRootUptake
-        axz=[],
-        bxz=[],
-        dxz=[],
+        beta=[0.0] * n_nodes,   # no explicit beta distribution (FeddesRootUptake handles uptake)
+        axz=[1.0] * n_nodes,
+        bxz=[1.0] * n_nodes,
+        dxz=[1.0] * n_nodes,
     )
 
 
@@ -311,7 +309,7 @@ def build_scenario(
             "water_flow": True,
             "atmospheric_bc": True,
             "root_uptake": True,
-            "solute_transport": bool(solute_events),
+            "solute_transport": False,   # Task 5 will set True + add SoluteTransport block
         },
         "materials": [
             {
