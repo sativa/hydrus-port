@@ -1,0 +1,35 @@
+{
+  "soils": [
+    {"id":"sand","name_zh":"砂土","name_en":"Sand",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.045,"theta_s":0.43,"alpha":0.145,"n":2.68,"Ks":712.8,"L":0.5}}]},
+    {"id":"loamy_sand","name_zh":"壤砂土","name_en":"Loamy sand",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.057,"theta_s":0.41,"alpha":0.124,"n":2.28,"Ks":350.2,"L":0.5}}]},
+    {"id":"sandy_loam","name_zh":"砂壤","name_en":"Sandy loam",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.065,"theta_s":0.41,"alpha":0.075,"n":1.89,"Ks":106.1,"L":0.5}}]},
+    {"id":"loam","name_zh":"壤土","name_en":"Loam",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.078,"theta_s":0.43,"alpha":0.036,"n":1.56,"Ks":24.96,"L":0.5}}]},
+    {"id":"silt","name_zh":"粉土","name_en":"Silt",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.034,"theta_s":0.46,"alpha":0.016,"n":1.37,"Ks":6.0,"L":0.5}}]},
+    {"id":"silt_loam","name_zh":"粉壤","name_en":"Silt loam",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.067,"theta_s":0.45,"alpha":0.020,"n":1.41,"Ks":10.8,"L":0.5}}]},
+    {"id":"sandy_clay_loam","name_zh":"砂粘壤","name_en":"Sandy clay loam",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.100,"theta_s":0.39,"alpha":0.059,"n":1.48,"Ks":31.44,"L":0.5}}]},
+    {"id":"clay_loam","name_zh":"粘壤","name_en":"Clay loam",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.095,"theta_s":0.41,"alpha":0.019,"n":1.31,"Ks":6.24,"L":0.5}}]},
+    {"id":"silty_clay_loam","name_zh":"粉粘壤","name_en":"Silty clay loam",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.089,"theta_s":0.43,"alpha":0.010,"n":1.23,"Ks":1.68,"L":0.5}}]},
+    {"id":"clay","name_zh":"粘土","name_en":"Clay",
+     "layers":[{"depth_cm":200,"vg":{"theta_r":0.068,"theta_s":0.38,"alpha":0.008,"n":1.09,"Ks":4.80,"L":0.5}}]},
+    {"id":"sand_over_clay","name_zh":"砂覆粘","name_en":"Sand over clay",
+     "layers":[
+       {"depth_cm":40,"vg":{"theta_r":0.045,"theta_s":0.43,"alpha":0.145,"n":2.68,"Ks":712.8,"L":0.5}},
+       {"depth_cm":160,"vg":{"theta_r":0.068,"theta_s":0.38,"alpha":0.008,"n":1.09,"Ks":4.80,"L":0.5}}
+     ]},
+    {"id":"topsoil_subsoil_bedrock","name_zh":"表土+心土+底土","name_en":"Topsoil/subsoil/bedrock",
+     "layers":[
+       {"depth_cm":30,"vg":{"theta_r":0.078,"theta_s":0.43,"alpha":0.036,"n":1.56,"Ks":24.96,"L":0.5}},
+       {"depth_cm":100,"vg":{"theta_r":0.095,"theta_s":0.41,"alpha":0.019,"n":1.31,"Ks":6.24,"L":0.5}},
+       {"depth_cm":70,"vg":{"theta_r":0.068,"theta_s":0.38,"alpha":0.008,"n":1.09,"Ks":4.80,"L":0.5}}
+     ]}
+  ]
+}
