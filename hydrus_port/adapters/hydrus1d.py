@@ -208,9 +208,9 @@ def load(input_dir: Path | str) -> Scenario:
 
 
 def save(scenario: Scenario, output_dir: Path | str) -> None:
-    """Write a HYDRUS-1D Selector.in + Profile.dat from the canonical
-    Scenario. Round-trips losslessly for the soil_loam_infiltr fixture
-    (semantically — Fortran column widths may differ)."""
+    """Write a HYDRUS-1D Selector.in + Profile.dat (+ ATMOSPH.IN when AtmBC is
+    True) from the canonical Scenario. Round-trips losslessly for the
+    soil_loam_infiltr fixture (semantically — Fortran column widths may differ)."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     if scenario.dimension != "1d":
@@ -226,6 +226,72 @@ def save(scenario: Scenario, output_dir: Path | str) -> None:
         (out / "Profile.dat").write_text(raw_prof)
     else:
         _write_profile(scenario, out / "Profile.dat")
+    # Write ATMOSPH.IN whenever AtmBC is enabled and atmospheric rows exist.
+    if scenario.solver.atmospheric_bc and scenario.atmospheric is not None:
+        _write_atmosph(scenario, out / "ATMOSPH.IN")
+
+
+# ----------------------------------------------------------------------
+# ATMOSPH.IN writer
+# ----------------------------------------------------------------------
+
+def _write_atmosph(scenario: Scenario, path: Path) -> None:
+    """Write ATMOSPH.IN for HYDRUS-1D v4.
+
+    When ``scenario.solute`` is not None, appends NS=1 cTop and cBot columns
+    per data row; per-day cTop values are read from
+    ``scenario.legacy_extras["agronomy_cTop"]`` (keyed by 1-based day index,
+    default 0.0).  All other days get cTop=0.0 and cBot=0.0.
+    """
+    atm = scenario.atmospheric
+    legacy = scenario.legacy_extras
+    has_solute = scenario.solute is not None
+    ctop_map: dict = legacy.get("agronomy_cTop", {})
+    # Convert keys to int if they came from JSON (stored as str)
+    ctop_map_int: dict[int, float] = {int(k): float(v) for k, v in ctop_map.items()}
+
+    L: list[str] = []
+    L.append("Pcp_File_Version=4")
+    L.append("*** BLOCK I: ATMOSPHERIC INFORMATION  *********************************")
+    L.append("MaxAL                       (MaxAL = number of atmospheric data-records)")
+    L.append(str(len(atm.rows)))
+    L.append("lDayVar  lSinPrec  lLAI")
+    L.append("f f f")
+    L.append("hCritS  (max. allowed pressure head at the soil surface)")
+    h_crit_s = legacy.get("h1d_hCritS", 1.0e30)
+    L.append(f"{_fmt(h_crit_s)}")
+
+    # Column header — mandatory 11 cols, plus optional cTop/cBot per solute
+    if has_solute:
+        L.append(
+            "   tAtm        Prec       rSoil       rRoot       hCritA"
+            "       rB         hB         hT         tTop        tBot"
+            "        Ampl  cTop_1  cBot_1"
+        )
+    else:
+        L.append(
+            "   tAtm        Prec       rSoil       rRoot       hCritA"
+            "       rB         hB         hT         tTop        tBot"
+            "        Ampl"
+        )
+
+    for i, row in enumerate(atm.rows):
+        day_idx = i + 1  # 1-based
+        h_crit_a = row.h_critA if row.h_critA != -1e30 else -1.0e5
+        base = (
+            f"{row.t:>10.4f} {row.precip:>11.4e} {row.evap:>11.4e} "
+            f"{row.rRoot:>11.4e} {h_crit_a:>10.2e} {row.rB:>10.4e} "
+            f"{row.hB:>10.4e} {row.ht:>10.4e} {row.tTop:>10.4e} "
+            f"{row.tBot:>10.4e} {row.Ampl:>10.4e}"
+        )
+        if has_solute:
+            ctop = ctop_map_int.get(day_idx, 0.0)
+            cbot = 0.0
+            base += f" {ctop:>7.1f} {cbot:>7.1f}"
+        L.append(base)
+
+    L.append("*** END OF INPUT FILE 'ATMOSPH.IN' ***")
+    path.write_text("\n".join(L) + "\n")
 
 
 # ----------------------------------------------------------------------
@@ -235,6 +301,15 @@ def save(scenario: Scenario, output_dir: Path | str) -> None:
 def _write_profile(scenario: Scenario, path: Path) -> None:
     g = scenario.geometry  # Geometry1D
     n = len(g.z)
+    legacy = scenario.legacy_extras
+    lChem = scenario.solver.solute_transport
+
+    # Per-node initial concentration (agronomy sets all to 0.0)
+    init_conc: list[float] = legacy.get("agronomy_initial_conc_per_node", [])
+    # Pad / truncate to n nodes
+    if len(init_conc) < n:
+        init_conc = list(init_conc) + [0.0] * (n - len(init_conc))
+
     L = ["    2"]
     L.append(f"    1   {g.z[0]:>12.6e}  1.000000e+000  1.000000e+000")
     L.append(f"    2   {g.z[-1]:>12.6e}  1.000000e+000  1.000000e+000")
@@ -243,11 +318,19 @@ def _write_profile(scenario: Scenario, path: Path) -> None:
         f"            Axz            Bxz            Dxz            Temp"
     )
     for i in range(n):
-        L.append(
+        line = (
             f"{i+1:>5d}  {g.z[i]:>13.6e}  {g.initial_h[i]:>12.6e}    "
             f"{g.mat_num[i]:d}    {g.layer[i]:d}   {g.beta[i]:>12.6e}  "
-            f"{g.axz[i]:>13.6e}  {g.bxz[i]:>13.6e}  {g.dxz[i]:>13.6e}              "
+            f"{g.axz[i]:>13.6e}  {g.bxz[i]:>13.6e}  {g.dxz[i]:>13.6e}"
         )
+        if lChem:
+            # Append Temp (always 20.0 for agronomy) and Conc1 (initial)
+            temp_val = 20.0
+            conc_val = init_conc[i]
+            line += f" {temp_val:>6.1f} {conc_val:>6.1f}"
+        else:
+            line += "              "
+        L.append(line)
     L.append("   0")
     path.write_text("\n".join(L) + "\n")
 
@@ -416,6 +499,30 @@ def _write_selector(scenario: Scenario, path: Path) -> None:
             L.append("iRFak  tRMin  tRMed  tRHarv  xRMin  xRMed  xRMax  tRPeriod")
             L.append(f"2  {_fmt(t_min)}  {_fmt(t_med)}  {_fmt(t_harv)}"
                      f"  {_fmt(x_min)}  {_fmt(x_med)}  {_fmt(x_max)}  1.000e+30")
+        elif tag == "BLOCK F" and s.solute is not None:
+            # Synthesise ChemIn block (Block F, v4 format) for NS=1 (N-NO₃).
+            sol = s.solute
+            n_mat = len(mat)
+            L.append("*** BLOCK F: SOLUTE TRANSPORT INFORMATION ****************************")
+            L.append("Epsi  lUpW  lArtD lTDep cTolA  cTolR  MaxItC  PeCr  NS  lTort  iBact  lFiltr")
+            L.append(f"0.5 f f f 0 0 20 2 1 f 0 f")
+            L.append("iNonEqul lMoistDep lDualNEq lMassIni lEqInit lVar")
+            L.append("0 f f f f f")
+            L.append("Bulk.d Disp.L. Frac ImmobWC")
+            chem = (sol.chem_params + [[1.35, 5.0, 1.0, 0.0]] * n_mat)[:n_mat]
+            for row in chem:
+                L.append(" ".join(_fmt(v) for v in row[:4]))
+            L.append("Dif.w.   Dif.g.   (Solute 1 = N-NO3)")
+            L.append("0.0 0.0")
+            L.append("Ks  Nu  Beta  Henry  SnkL1 SnkS1 SnkG1 SnkL1' SnkS1' SnkG1' SnkL0 SnkS0 SnkG0 Alfa")
+            L.append("0.0 0.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0")
+            # kTopCh/kBotCh from kod_cb; cTop/cBot from c_bound
+            k_codes = (list(sol.kod_cb) + [-1, 0])[:2]
+            c_vals  = (list(sol.c_bound) + [0.0, 0.0])[:2]
+            L.append("kTopCh  cTop(1)   kBotCh  cBot(1)")
+            L.append(f"{k_codes[0]} {_fmt(c_vals[0])} {k_codes[1]} {_fmt(c_vals[1])}")
+            L.append("tPulse")
+            L.append(_fmt(sol.t_pulse if sol.t_pulse else 1.0e30))
         elif tag == "BLOCK G" and s.root_uptake is not None:
             # Synthesise SinkIn block (Block G, v4 format).
             # iMoSink=0 → Feddes model (pressure-head based).
@@ -433,6 +540,11 @@ def _write_selector(scenario: Scenario, path: Path) -> None:
                      f"  {_fmt(ru.p3)}  {_fmt(ru.r2H)}  {_fmt(ru.r2L)}")
             L.append("POptm(1..NMat)")
             L.append("  ".join(_fmt(v) for v in p_optm_vals))
+            # When lChem=True the SinkIn reader additionally expects a
+            # lSolRed header + value (osmotic-stress flag, always f for agronomy).
+            if cfg.solute_transport:
+                L.append("lSolRed")
+                L.append("f")
 
     L.append("*** END OF INPUT FILE 'SELECTOR.IN' ***")
     path.write_text("\n".join(L) + "\n")

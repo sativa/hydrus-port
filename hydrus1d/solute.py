@@ -313,117 +313,134 @@ def solve_solute_transport(
     cvTop = 0.0
     cvBot = 0.0
     
-    # Bottom node (index 0)
-    dx = x[1] - x[0]
-    dxB = dx / 2.0
-    D1 = (Disp[0] + Disp[1]) / 2.0
-    v1 = (vN[0] + vN[1]) / 2.0
-    th1 = (thN[0] + thN[1]) / 2.0
-    
-    # Upstream weighting for convection
+    # ---- Bottom node (index 0) ----
+    # x[0] = deepest node (bottom), x[N-1] = surface (top).
+    # Fluxes are positive upward in HYDRUS-1D convention.
+    dxB = abs(x[1] - x[0])
+    D1 = 0.5 * (Disp[0] + Disp[1])
+    v1 = 0.5 * (vN[0] + vN[1])
+
     if lUpW:
-        if v1 > 0:
-            wc = 1.0
-        else:
-            wc = 0.0
+        wc = 1.0 if v1 > 0 else 0.0
     else:
         wc = 0.5
-    
-    A2 = D1 / dxB
-    D[0] = A2 / dt + Retard[0] * (thN[0] - thO[0]) / dt + g0[0] + sSink[0]
-    E[0] = -A2 / dt
-    F[0] = Retard[0] * thO[0] / dt * Conc[jS - 1, 0] - g1[0]
-    
+
+    # Diffusion coefficient A2 = D_avg / dx_half
+    A2 = D1 / max(dxB, rMin)
+    # Convective flux from lower half-cell
+    conv_B = v1 * (wc * Conc[jS - 1, 0] + (1.0 - wc) * Conc[jS - 1, 1])
+
+    R_0 = Retard[0]
+    thN_0 = max(thN[0], rMin)
+    thO_0 = max(thO[0], rMin)
+    # Mass-balance diagonal: R * thN / dt (accumulation of new mass)
+    D[0] = R_0 * thN_0 / dt + A2 / dxB + g0[0] + sSink[0]
+    E[0] = -A2 / dxB
+    # RHS: R * thO * c_old / dt (accumulation of old mass) minus convective out-flux
+    F[0] = R_0 * thO_0 / dt * Conc[jS - 1, 0] - g1[0] - conv_B / dxB
+
     # Apply bottom BC
-    if kBotCh < 0:
-        # Flux BC
-        if vN[0] >= 0:
-            cvBot = epsi * cBot * vN[0]
+    if kBotCh == 0:
+        # Zero-gradient (free drainage) — solute leaves at current concentration
+        cvBot = Conc[jS - 1, 0] * vN[0]
+        # No additional terms; the convective flux already handles transport
+    elif kBotCh < 0:
+        # Flux BC — inflow with concentration cBot
+        if vN[0] > 0:
+            cvBot = cBot * vN[0]
+            F[0] += cvBot / dxB
         else:
-            cvBot = epsi * Conc[jS - 1, 0] * vN[0]
+            cvBot = Conc[jS - 1, 0] * vN[0]
         E[0] = rMin
-        D[0] = D[0] + abs(E[0])
-    elif kBotCh == 0:
-        # Variable head
-        cvBot = epsi * Conc[jS - 1, 0] * vN[0]
+        D[0] += abs(E[0])
     else:
-        # Concentration BC
-        F[0] = F[0] + A2 * cBot / dt
-        D[0] = D[0] + A2 / dt
+        # Prescribed concentration BC
+        F[0] += A2 * cBot / dxB
+        D[0] += A2 / dxB
         E[0] = rMin
-    
-    # Interior nodes
+        cvBot = Conc[jS - 1, 0] * vN[0]
+
+    # ---- Interior nodes (index 1 .. N-2) ----
     for i in range(1, N - 1):
-        dxA = x[i] - x[i - 1]
-        dxB = x[i + 1] - x[i]
-        dx = (dxA + dxB) / 2.0
-        
-        DA = (Disp[i] + Disp[i - 1]) / 2.0
-        DB = (Disp[i] + Disp[i + 1]) / 2.0
-        vA = (vN[i] + vN[i - 1]) / 2.0
-        vB = (vN[i] + vN[i + 1]) / 2.0
-        
+        dxA = abs(x[i] - x[i - 1])
+        dxB = abs(x[i + 1] - x[i])
+        dx_avg = 0.5 * (dxA + dxB)
+
+        DA = 0.5 * (Disp[i] + Disp[i - 1])
+        DB = 0.5 * (Disp[i] + Disp[i + 1])
+        vA = 0.5 * (vN[i] + vN[i - 1])
+        vB = 0.5 * (vN[i] + vN[i + 1])
+
         if lUpW:
             wcA = 1.0 if vA > 0 else 0.0
             wcB = 1.0 if vB > 0 else 0.0
         else:
             wcA = wcB = 0.5
-        
-        A1 = DA / dxA
-        A2 = DB / dxB
-        A3 = -DB / dxB
-        
-        # Mass-lumping: convection term goes to RHS
-        conv_A = vA * wcA * Conc[jS - 1, i - 1] + vA * (1 - wcA) * Conc[jS - 1, i]
-        conv_B = vB * wcB * Conc[jS - 1, i] + vB * (1 - wcB) * Conc[jS - 1, i + 1]
-        
+
+        A1 = DA / max(dxA, rMin)
+        A2 = DB / max(dxB, rMin)
+
+        conv_A = vA * (wcA * Conc[jS - 1, i - 1] + (1.0 - wcA) * Conc[jS - 1, i])
+        conv_B = vB * (wcB * Conc[jS - 1, i] + (1.0 - wcB) * Conc[jS - 1, i + 1])
+
         R_i = Retard[i]
-        D[i] = (A1 + A2) / dt + R_i * (thN[i] - thO[i]) / dt + g0[i] + sSink[i]
-        B[i] = -A1 / dt
-        E[i] = A3 / dt
-        F[i] = R_i * thO[i] / dt * Conc[jS - 1, i] - g1[i] + conv_A / dxA - conv_B / dxB
-    
-    # Top node (index N-1)
-    dxA = x[N - 1] - x[N - 2]
-    dx = dxA / 2.0
-    DA = (Disp[N - 1] + Disp[N - 2]) / 2.0
-    vA = (vN[N - 1] + vN[N - 2]) / 2.0
-    
+        thN_i = max(thN[i], rMin)
+        thO_i = max(thO[i], rMin)
+        D[i] = R_i * thN_i / dt + (A1 / dxA + A2 / dxB) + g0[i] + sSink[i]
+        B[i] = -A1 / dxA
+        E[i] = -A2 / dxB
+        F[i] = R_i * thO_i / dt * Conc[jS - 1, i] - g1[i] + (conv_A - conv_B) / dx_avg
+
+    # ---- Top node (index N-1, surface) ----
+    dxA = abs(x[N - 1] - x[N - 2])
+    DA = 0.5 * (Disp[N - 1] + Disp[N - 2])
+    vA = 0.5 * (vN[N - 1] + vN[N - 2])
+
     if lUpW:
         wcA = 1.0 if vA > 0 else 0.0
     else:
         wcA = 0.5
-    
-    A1 = DA / dxA
-    conv_A = vA * wcA * Conc[jS - 1, N - 2] + vA * (1 - wcA) * Conc[jS - 1, N - 1]
-    
+
+    A1 = DA / max(dxA, rMin)
+    conv_A = vA * (wcA * Conc[jS - 1, N - 2] + (1.0 - wcA) * Conc[jS - 1, N - 1])
+
     R_i = Retard[N - 1]
-    D[N - 1] = A1 / dt + R_i * (thN[N - 1] - thO[N - 1]) / dt + g0[N - 1] + sSink[N - 1]
-    B[N - 1] = -A1 / dt
+    thN_N = max(thN[N - 1], rMin)
+    thO_N = max(thO[N - 1], rMin)
+    D[N - 1] = R_i * thN_N / dt + A1 / dxA + g0[N - 1] + sSink[N - 1]
+    B[N - 1] = -A1 / dxA
     E[N - 1] = rMin
-    F[N - 1] = R_i * thO[N - 1] / dt * Conc[jS - 1, N - 1] - g1[N - 1] + conv_A / dxA
-    
+    F[N - 1] = R_i * thO_N / dt * Conc[jS - 1, N - 1] - g1[N - 1] + conv_A / dxA
+
     # Apply top BC
     if kTopCh < 0:
-        # Flux BC
-        if vN[N - 1] >= 0:
-            cvTop = epsi * cTop * vN[N - 1]
+        # Third-type (Cauchy) BC: incoming flux = cTop * |vN| when vN < 0 (downward inflow).
+        # vN[N-1] < 0 means flow is downward INTO the profile at the surface.
+        if vN[N - 1] < 0:
+            # Inflow: add incoming solute mass to F as a flux source
+            cvTop = cTop * vN[N - 1]    # negative (downward)
+            F[N - 1] += -cTop * vN[N - 1] / dxA   # positive source term
         else:
-            cvTop = epsi * Conc[jS - 1, N - 1] * vN[N - 1]
+            # Outflow: solute leaves at current concentration
+            cvTop = Conc[jS - 1, N - 1] * vN[N - 1]
         B[N - 1] = rMin
-        D[N - 1] = D[N - 1] + abs(B[N - 1])
+        D[N - 1] += abs(B[N - 1])
     else:
-        # Concentration BC
-        F[N - 1] = F[N - 1] + A1 * cTop / dt
-        D[N - 1] = D[N - 1] + A1 / dt
+        # Prescribed concentration BC
+        F[N - 1] += A1 * cTop / dxA
+        D[N - 1] += A1 / dxA
         B[N - 1] = rMin
-    
+        cvTop = Conc[jS - 1, N - 1] * vN[N - 1]
+
     # Solve tridiagonal system
     cNew = solve_banbury(N, B, D, E, F)
-    
+    # Guard against NaN/negative from ill-conditioned system
+    cNew = np.where(np.isfinite(cNew), cNew, 0.0)
+    cNew = np.maximum(cNew, 0.0)
+
     # Update concentrations
     Conc[jS - 1, :] = cNew
-    
+
     return cNew, cvTop, cvBot
 
 

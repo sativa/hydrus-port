@@ -20,7 +20,7 @@ from hydrus_research.library.weather import load_weather_series
 from hydrus_research.simulator.hydrus1d_adapter import Hydrus1DSimulator
 
 from .scenario_builder import build_scenario, event_to_t_day, _sow_date
-from .result_parser import parse_nod_inf, parse_balance
+from .result_parser import parse_nod_inf, parse_balance, parse_conc_from_nod_inf
 from .types import (
     AgronomyRequest, AgronomyResult,
     WaterBalance, NBudget, EventTick,
@@ -63,8 +63,13 @@ def run_agronomy(req: AgronomyRequest, work_dir: Path | str | None = None) -> Ag
     z, t, theta = parse_nod_inf(out_dir / "NOD_INF.OUT")
     balance = parse_balance(out_dir / "BALANCE.OUT")
 
-    # Solute transport disabled in M-agronomy-v1: return zeros at same (t, z) grid.
-    n_zt = [[0.0] * len(z) for _ in t]
+    # Parse N-NO₃ concentration field when solute transport was enabled.
+    try:
+        n_field = parse_conc_from_nod_inf(out_dir / "NOD_INF.OUT")
+        n_zt = n_field.tolist()
+    except Exception:
+        # Non-solute run, or file format without Conc column → zeros.
+        n_zt = [[0.0] * len(z) for _ in t]
 
     irrig_mm = sum(e.depth_mm for e in req.irrigation)
     sow = _sow_date(req, crop)
@@ -92,8 +97,8 @@ def run_agronomy(req: AgronomyRequest, work_dir: Path | str | None = None) -> Ag
         n_budget=NBudget(
             applied_kg_ha=sum(e.kg_n_ha for e in req.fertilizer),
             uptake_kg_ha=0.0,
-            leached_kg_ha=0.0,
-            residual_kg_ha=0.0,
+            leached_kg_ha=0.0,           # TODO M3: integrate solute flux at bottom node
+            residual_kg_ha=sum(e.kg_n_ha for e in req.fertilizer),   # applied - leached - uptake
         ),
         events=events,
     )

@@ -82,6 +82,80 @@ def test_canonical_scenario_writes_valid_hydrus1d_input(tmp_path):
     assert max(z_values) == 0.0, f"surface z should be 0, got max={max(z_values)}"
     assert min(z_values) <= -50.0, f"deepest z should be deeply negative, got min={min(z_values)}"
 
+    # ATMOSPH.IN must be written when the request has atmospheric BC.
+    assert "ATMOSPH.IN" in files, "ATMOSPH.IN missing — atmospheric BC not written"
+    atm_text = (tmp_path / "ATMOSPH.IN").read_text()
+    assert "tAtm" in atm_text, "ATMOSPH.IN header must contain 'tAtm'"
+    # Count data rows (lines with numeric first token = one row per day in horizon).
+    atm_data_rows = [
+        ln for ln in atm_text.splitlines()
+        if ln.strip() and ln.strip().split()[0].lstrip("-").replace(".", "").isdigit()
+    ]
+    assert len(atm_data_rows) >= 14, (
+        f"ATMOSPH.IN should have ≥ 14 data rows for horizon_days=14, got {len(atm_data_rows)}"
+    )
+
+
+def test_scenario_with_fert_creates_chem_block(tmp_path):
+    """BLOCK F must appear in Selector.in; cTop in ATMOSPH.IN; Profile.dat has Conc column."""
+    from hydrus_research.agronomy.scenario_builder import build_scenario
+    from hydrus_research.library.crops import get_crop
+    from hydrus_research.library.soils import get_soil
+    from hydrus_research.library.weather import load_weather_series
+    from hydrus_research.agronomy.types import AgronomyRequest, IrrigEvent, FertEvent
+    from hydrus_port.adapters.hydrus1d import save as save_h1d
+    from datetime import date
+
+    req = AgronomyRequest(
+        crop_id="maize", soil_id="loam", weather_id="n_china_avg",
+        horizon_days=20, start_year=2026,
+        irrigation=[IrrigEvent(date=date(2026, 5, 10), depth_mm=20.0)],
+        fertilizer=[FertEvent(date=date(2026, 5, 12), kg_n_ha=60.0)],
+    )
+    sc = build_scenario(
+        get_crop("maize"), get_soil("loam"),
+        load_weather_series("n_china_avg"), req,
+    )
+    save_h1d(sc.scenario, str(tmp_path))
+
+    # 1. Selector.in must contain BLOCK F (solute transport section).
+    selector_text = (tmp_path / "Selector.in").read_text()
+    assert "BLOCK F" in selector_text, "BLOCK F missing from Selector.in"
+    assert "Bulk.d" in selector_text, "BLOCK F chem_params header missing from Selector.in"
+
+    # 2. ATMOSPH.IN must exist and have a non-zero cTop on the fertilizer day.
+    assert (tmp_path / "ATMOSPH.IN").exists(), "ATMOSPH.IN missing"
+    atm_text = (tmp_path / "ATMOSPH.IN").read_text()
+    # With NS=1 solute, rows have 13 columns: tAtm ... Ampl cTop_1 cBot_1.
+    # cTop_1 is the second-to-last column (index -2); cBot_1 is the last.
+    ctop_values = []
+    for line in atm_text.splitlines():
+        parts = line.split()
+        if len(parts) >= 13 and parts[0].lstrip("-").replace(".", "").isdigit():
+            try:
+                ctop_values.append(float(parts[-2]))  # cTop_1 is second-to-last
+            except ValueError:
+                continue
+    assert any(v > 0 for v in ctop_values), (
+        f"ATMOSPH.IN must have at least one non-zero cTop_1 (fertilizer day), got: {ctop_values[:5]}"
+    )
+
+    # 3. Profile.dat data rows must have extra columns (Temp + Conc) appended.
+    # Profile.dat structure: 2-line BC header, then header line, then node rows.
+    # Node rows: Node x h Mat Lay Beta Axz Bxz Dxz [Temp Conc1 ...]  (≥ 9 standard cols).
+    profile_text = (tmp_path / "Profile.dat").read_text()
+    data_rows = []
+    for line in profile_text.splitlines():
+        parts = line.split()
+        # Skip short BC-code lines (4 cols) and the text header line
+        if len(parts) >= 9 and parts[0].lstrip("-").isdigit():
+            data_rows.append(parts)
+    assert data_rows, "no node data rows (≥9 cols) found in Profile.dat"
+    # Standard Profile.dat row has 9 columns; with lChem=True adds Temp + Conc = 11 columns.
+    assert len(data_rows[0]) >= 10, (
+        f"Profile.dat row should have ≥ 10 columns with Temp+Conc, got {len(data_rows[0])}: {data_rows[0]}"
+    )
+
 
 def test_result_parser_returns_ascending_z_and_finite_theta(tmp_path):
     """Synthesize a NOD_INF.OUT-like file and check the parser."""

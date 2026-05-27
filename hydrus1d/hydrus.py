@@ -678,6 +678,62 @@ class Hydrus1DSimulation:
 
             self._update_velocity(use_new=True)
 
+            # --- Solute transport step (when lChem=True) -------------------
+            # Sequentially solve the ADE for each solute species.
+            # cTop for the current atmospheric record is updated from
+            # atmos_data['cTopA'] when AtmBC is active.
+            if getattr(s, 'lSolute', False) and hasattr(s, 'Conc'):
+                NS = int(getattr(s, 'NS', 0))
+                for jS in range(1, NS + 1):
+                    jj = jS - 1   # 0-based species index
+                    # Per-time-step top concentration from ATMOSPH.IN (ALevel is
+                    # the index of the *current* atmospheric record).
+                    _ct = getattr(s, 'cTop', 0.0)
+                    _cb = getattr(s, 'cBot', 0.0)
+                    cTop_atm = float(_ct[jj]) if hasattr(_ct, '__len__') else float(_ct)
+                    cBot_atm = float(_cb[jj]) if hasattr(_cb, '__len__') else float(_cb)
+                    if (s.AtmBC and self.atmos_data.get('MaxAL', 0) > 0
+                            and ALevel < self.atmos_data['MaxAL']):
+                        cTopA = self.atmos_data.get('cTopA')
+                        if cTopA is not None and cTopA.shape[1] > ALevel:
+                            cTop_atm = float(cTopA[jj, ALevel])
+                    _kt = getattr(s, 'kTopCh', -1)
+                    _kb = getattr(s, 'kBotCh', 0)
+                    kTopCh = int(_kt[jj]) if hasattr(_kt, '__len__') else int(_kt)
+                    kBotCh = int(_kb[jj]) if hasattr(_kb, '__len__') else int(_kb)
+                    # Compute dispersion/retardation (fills s.Disp, s.Retard)
+                    try:
+                        compute_coefficients(
+                            jS, 1, 1, N, s.x, s.Disp,
+                            s.vOld, s.vNew, s.thOld, s.thNew,
+                            s.thSat, s.ChPar, s.MatNum,
+                            s.TempN, s.TempO, s.TDep,
+                            s.Retard, s.Conc, s.cNew, s.cPrevO,
+                            dt, s.lEquil, getattr(s, 'lUpW', False),
+                            getattr(s, 'lArtD', False),
+                            0, getattr(s, 'lTort', False),
+                            getattr(s, 'iDualPor', 0),
+                            s.ThNIm, s.ThOIm, s.SinkIm,
+                        )
+                    except Exception:
+                        pass
+                    # Solve ADE
+                    try:
+                        cNew_j, cvTop, cvBot = solve_solute_transport(
+                            jS, N, s.x, s.Conc, s.vNew,
+                            s.thNew, s.thOld, s.Disp, s.Retard,
+                            dt, kTopCh, kBotCh,
+                            cTop_atm, cBot_atm,
+                            s.g0, s.g1, s.sSink,
+                            getattr(s, 'lUpW', False),
+                            s.lEquil,
+                            getattr(s, 'epsi', 0.5),
+                        )
+                        s.Conc[jj, :] = cNew_j
+                        s.CumQCh[jj] += cvBot * dt
+                    except Exception:
+                        pass
+
             # Cumulative fluxes (Fortran CumQ array layout, 1-based →
             # 0-based here):
             #   CumQ[0] : top boundary flux
@@ -1100,16 +1156,35 @@ class Hydrus1DSimulation:
         s.dt = max(dt, dtMin)
 
     def _write_nod_out(self, t: float) -> None:
-        """Append one profile snapshot to NOD_INF.OUT (Fortran format 110/120)."""
+        """Append one profile snapshot to NOD_INF.OUT (Fortran format 110/120).
+
+        When lSolute=True, appends one concentration column per solute species
+        after the standard hydraulic columns.
+        """
         s = self.state
         f = self._fNod
+        lSolute = getattr(s, 'lSolute', False)
+        NS = int(getattr(s, 'NS', 0)) if lSolute else 0
+        has_conc = lSolute and NS > 0 and hasattr(s, 'Conc')
+
         f.write(f"\n Time:    {t:12.4f}\n\n")
-        f.write(
-            " Node      Depth      Head Moisture       K          C         "
-            "Flux        Sink         Kappa   v/KsTop   Temp\n"
-            "           [L]        [L]    [-]        [L/T]      [1/L]      "
-            "[L/T]        [1/T]         [-]      [-]      [C]\n\n"
-        )
+        # Header line — add Conc column(s) when solute transport is active
+        if has_conc:
+            conc_hdr = "".join(f"      C{j+1}   " for j in range(NS))
+            conc_unit = "".join(f"     [M/L³] " for _ in range(NS))
+            f.write(
+                " Node      Depth      Head Moisture       K          C         "
+                f"Flux        Sink         Kappa   v/KsTop   Temp{conc_hdr}\n"
+                "           [L]        [L]    [-]        [L/T]      [1/L]      "
+                f"[L/T]        [1/T]         [-]      [-]      [C]{conc_unit}\n\n"
+            )
+        else:
+            f.write(
+                " Node      Depth      Head Moisture       K          C         "
+                "Flux        Sink         Kappa   v/KsTop   Temp\n"
+                "           [L]        [L]    [-]        [L/T]      [1/L]      "
+                "[L/T]        [1/T]         [-]      [-]      [C]\n\n"
+            )
         # Node 1 = bottom, node NumNP = top — Fortran prints top first.
         # KsTop = K at the surface node.
         from .material import FC
@@ -1122,12 +1197,16 @@ class Hydrus1DSimulation:
             kappa = int(s.Kappa[n])
             vkstop = v / KsTop
             Tn = s.TempN[n]
-            f.write(
+            line = (
                 f"{s.NumNP - n:5d} {s.x[n]:11.4f} {s.hNew[n]:10.3f} "
                 f"{s.thNew[n]:7.4f} {s.Con[n]:11.4e} {cap:11.4e} "
                 f"{v:11.4e} {sink:11.4e} {kappa:8d} "
-                f"{vkstop:10.3e} {Tn:8.2f}\n"
+                f"{vkstop:10.3e} {Tn:8.2f}"
             )
+            if has_conc:
+                for jj in range(NS):
+                    line += f" {s.Conc[jj, n]:11.4e}"
+            f.write(line + "\n")
         f.write(" end\n")
 
     def _write_tlevel(self, t: float, dt: float, vTop: float, vBot: float,

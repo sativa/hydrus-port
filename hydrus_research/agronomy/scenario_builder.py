@@ -88,29 +88,67 @@ def _build_atm_rows(
     horizon: int,
     weather: dict[str, list[float]],
     req: AgronomyRequest,
-) -> list[AtmosphericRow]:
+) -> tuple[list[AtmosphericRow], dict[int, float]]:
     """Build one AtmosphericRow per simulation day (precip + PET).
 
     Irrigation events on the matching calendar date are added to precipitation.
     Units: precip/evap in cm/day (HYDRUS-1D convention; weather data in mm).
+
+    Returns
+    -------
+    rows : list[AtmosphericRow]
+    ctop_by_day : dict[int, float]
+        Map from 1-based simulation-day index to cTop value (mg/L equivalent
+        concentration for solute 1 = N-NO₃) for that day.  Only days that have
+        a fertilizer event are present; all other days default to 0.0 in the
+        ATMOSPH.IN writer.
     """
+    # Build a lookup: calendar date → fertilizer events
+    fert_by_date: dict[date, list] = {}
+    for fe in req.fertilizer:
+        fert_by_date.setdefault(fe.date, []).append(fe)
+
     rows = []
+    ctop_by_day: dict[int, float] = {}
+
     for i in range(horizon):
         cur = sow + timedelta(days=i)
         doy = cur.timetuple().tm_yday
         idx = (doy - 1) % 365
         prec_mm = weather["P_mm"][idx]
         pet_mm  = weather["PET_mm"][idx]
+
         # Add scheduled irrigation events falling on this calendar day
+        irrig_mm = 0.0
         for ie in req.irrigation:
             if ie.date == cur:
                 prec_mm += ie.depth_mm
+                irrig_mm += ie.depth_mm
+
         rows.append(AtmosphericRow(
             t=float(i + 1),
             precip=prec_mm / 10.0,   # mm → cm
             evap=pet_mm  / 10.0,
         ))
-    return rows
+
+        # Fertilizer events on this day → cTop concentration for ATMOSPH.IN
+        if cur in fert_by_date:
+            total_ctop = 0.0
+            for fe in fert_by_date[cur]:
+                if fe.conc_mg_l is not None:
+                    total_ctop += fe.conc_mg_l
+                else:
+                    # Dissolve kg_n_ha in the available water (precip + irrig) for this day
+                    # kg/ha × 100 → g/m² = mg/cm² ; / water_cm = mg/cm³ = mg/mL = mg/L
+                    # (factor: 1 kg/ha = 100 g/1000 m² × 10^6 mg/kg = 0.1 g/m²)
+                    water_cm = prec_mm / 10.0  # already includes irrig above
+                    water_cm = max(water_cm, 0.1)  # guard against zero
+                    # cTop in mg/L: (kg_n_ha * 0.1 g/m²) / (water_cm * 0.01 m) / 1000 mg/g
+                    # Simplified: cTop_mg_L = kg_n_ha * 10 / water_cm
+                    total_ctop += fe.kg_n_ha * 10.0 / water_cm
+            ctop_by_day[i + 1] = total_ctop   # 1-based day index
+
+    return rows, ctop_by_day
 
 
 def _build_materials(soil: Soil) -> list[HydraulicMaterial]:
@@ -272,7 +310,7 @@ def build_scenario(
     horizon = req.horizon_days
 
     # 1. Atmospheric BC (precipitation + ET per day; irrigation added to precip)
-    atm_rows = _build_atm_rows(sow, horizon, weather, req)
+    atm_rows, ctop_by_day = _build_atm_rows(sow, horizon, weather, req)
 
     # 2. Materials (one per soil layer; VG params)
     materials = _build_materials(soil)
@@ -294,9 +332,19 @@ def build_scenario(
                 "conc_mg_l": fe.conc_mg_l,
             })
 
-    # 6. Build canonical Scenario via _scenario_from_dict.
-    # ``solute`` and per-layer nitrogen chemistry are stored in legacy_extras
-    # (the canonical SoluteTransport doesn't model kg N/ha injection events).
+    # 6. Determine whether to enable solute transport
+    has_fert = bool(req.fertilizer)
+    n_mat = len(soil.layers)
+    n_nodes = max(101, int(sum(L.depth_cm for L in soil.layers)) + 1)
+
+    # 7. Build canonical Scenario via _scenario_from_dict.
+    solver_dict: dict[str, Any] = {
+        "water_flow": True,
+        "atmospheric_bc": True,
+        "root_uptake": True,
+        "solute_transport": has_fert,
+    }
+
     scenario_dict: dict[str, Any] = {
         "meta": {
             "name": f"agronomy_{crop.id}_{soil.id}_{req.weather_id}",
@@ -305,12 +353,7 @@ def build_scenario(
                 f"horizon={horizon}d"
             ),
         },
-        "solver": {
-            "water_flow": True,
-            "atmospheric_bc": True,
-            "root_uptake": True,
-            "solute_transport": False,   # Task 5 will set True + add SoluteTransport block
-        },
+        "solver": solver_dict,
         "materials": [
             {
                 "theta_r": m.theta_r,
@@ -368,9 +411,6 @@ def build_scenario(
                 for r in atm_rows
             ],
         },
-        # Fertilizer events stored as legacy extras; Task-5 runner will
-        # translate them into solute boundary conditions before calling
-        # the HYDRUS-1D adapter.
         "legacy_extras": {
             "agronomy": {
                 "crop_id":      crop.id,
@@ -380,9 +420,27 @@ def build_scenario(
                 "solute_events": solute_events,
                 "root_z50_cm":  crop.root.z50_cm,
                 "root_z95_cm":  crop.root.z95_cm,
-            }
+            },
+            # Per-day cTop concentrations for ATMOSPH.IN (only populated when
+            # fert events exist; keyed by 1-based simulation day).
+            "agronomy_cTop": ctop_by_day,
+            # Per-node initial concentration for Profile.dat (all zero at t=0).
+            "agronomy_initial_conc_per_node": [0.0] * n_nodes,
         },
     }
+
+    # 8. SoluteTransport block (BLOCK F) — only when fertilizer events exist
+    if has_fert:
+        scenario_dict["solute"] = {
+            "epsi": 0.5,
+            # Per-material: Bulk.d, Disp.L, Frac, ImmobWC
+            "chem_params": [[1.35, 5.0, 1.0, 0.0]] * n_mat,
+            # kTopCh=-1 (Cauchy/3rd-type, uses ATMOSPH.IN cTop per timestep)
+            # kBotCh=0  (zero-gradient bottom)
+            "kod_cb": [-1, 0],
+            "c_bound": [0.0, 0.0],
+            "t_pulse": 1.0e30,
+        }
 
     canonical = _scenario_from_dict(scenario_dict)
 
