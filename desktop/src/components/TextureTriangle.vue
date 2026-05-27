@@ -26,7 +26,7 @@ function _draw() {
     },
     margin: { t: 20, l: 60, r: 60, b: 60 }, showlegend: false,
   }, { responsive: true, displayModeBar: false });
-  plotEl.value.on("plotly_click", (ev: any) => {
+  (plotEl.value as any).on("plotly_click", (ev: any) => {
     const pt = ev.points[0];
     emit("update", {
       clay_pct: pt.a, sand_pct: pt.b, silt_pct: pt.c,
